@@ -1,0 +1,23 @@
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: coral-x-default-x-coral
+  namespace: p-coral
+  labels:
+    hive.ksl/project: coral
+    hive.ksl/template: studio-inference
+    hive.ksl/managed-by: studio-executor
+    hive.ksl/virtual-name: coral
+  annotations:
+    serving.kserve.io/deploymentMode: Serverless
+    autoscaling.knative.dev/min-scale: '1'
+spec:
+  predictor:
+    minReplicas: 1
+    model:
+      modelFormat:
+        name: sklearn
+      storageUri: pvc://models
+      resources:
+        limits:
+          nvidia.com/gpu: '1'

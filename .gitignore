@@ -1,0 +1,151 @@
+# ===========================================================================
+# HIVE-LOCAL — .gitignore
+# ===========================================================================
+# The default in this repository is to COMMIT, not to ignore. CLAUDE.md §1 makes
+# that the rule the whole rehearsal rests on: every artifact is a declarative file
+# committed to git, because this build is migrated to the official platform later
+# and anything that exists only on this laptop does not survive the move.
+#
+# So this file is deliberately short, and each entry is one of exactly three kinds:
+#
+#   (1) MACHINE-LOCAL NOISE — editor and OS droppings, nothing to do with HIVE.
+#   (2) REGENERABLE OUTPUT — installed dependencies and build products, recreated
+#       from a committed lockfile or manifest.
+#   (3) CREDENTIALS AND RUNTIME STATE — things that MUST NOT be committed, either
+#       because they are secrets or because they are the cluster's truth rather
+#       than the repo's intent.
+#
+# Anything that does not fall into one of those three does not belong here.
+# In particular, see the two "DELIBERATELY NOT IGNORED" notes at the bottom.
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# (1) macOS and editors
+# ---------------------------------------------------------------------------
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+.Spotlight-V100
+.Trashes
+*.swp
+*~
+.idea/
+.vscode/*
+!.vscode/extensions.json
+
+# ---------------------------------------------------------------------------
+# (2) Python — the Studio backend
+# ---------------------------------------------------------------------------
+# The venv is machine-local by construction: it is built against whichever
+# interpreter this laptop happens to have, and VERSIONS.md already flags that
+# CPython 3.14 may need to become a 3.11/3.13 venv for studio/backend/ if a
+# dependency will not build. The DEPENDENCY LIST is the committed artifact;
+# the resolved environment is not.
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---------------------------------------------------------------------------
+# (2) Node — the Studio frontend
+# ---------------------------------------------------------------------------
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+npm-debug.log*
+yarn-error.log*
+
+# ---------------------------------------------------------------------------
+# (3) Credentials — kubeconfigs, above all the per-tenant ones
+# ---------------------------------------------------------------------------
+# `vcluster connect <name> -n p-<name> --print` emits a kubeconfig containing an
+# ADMIN CREDENTIAL for that tenant's control plane. The inference-endpoint
+# template hands exactly such a file to the PI as its `kubeconfig` output, so the
+# Studio backend will be producing these routinely. None of them may ever land in
+# a commit.
+kubeconfig
+kubeconfig.yaml
+*.kubeconfig
+.kube/
+
+# Generic secret shapes. There is no identity layer locally (DEVIATIONS.md), so
+# there is nothing here to leak TODAY — these exist so that the day Keycloak
+# arrives, the ignore rule is already in place rather than being remembered.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# ---------------------------------------------------------------------------
+# (3) Studio runtime state
+# ---------------------------------------------------------------------------
+# The registry. CLAUDE.md Studio invariant (b) splits truth in two: the CLUSTER
+# is the source of truth for what IS, and this SQLite file records only what was
+# ASKED FOR — who requested what, when, and how the pipeline went. That makes it
+# a local operations log, not a declarative artifact: it is written continuously
+# at runtime, it is binary, it would conflict on every pull, and a committed copy
+# would describe deployments that no longer exist on anyone else's machine.
+studio/backend/studio.db
+studio/backend/studio.db-journal
+studio/backend/studio.db-wal
+studio/backend/studio.db-shm
+
+# ---------------------------------------------------------------------------
+# (3) Scratch
+# ---------------------------------------------------------------------------
+*.log
+*.tmp
+/tmp/
+
+# The UI checks' scratch build. scripts/studio-ui-check.sh compiles
+# studio/frontend/tests/ui-check.jsx here with Vite and runs it in Node; it is
+# regenerated every run and holds nothing a person would read.
+studio/frontend/.ui-check/
+
+# ===========================================================================
+# (n) A PI's OWN DOCUMENTS — staged corpora
+# ===========================================================================
+# POST /api/uploads streams a PI's uploaded documents to tenants/_uploads/<id>/,
+# and the RAG pipeline's corpus-upload step copies from there onto the project's
+# `scratch` volume. THEY ARE RESEARCH DATA, not repository content: they belong
+# to whoever uploaded them, they may be unpublished, and the wizard's own copy
+# promises they are "copied into your project once, at setup, and deleted when
+# the project is". Committing them would break that promise in the most durable
+# way available.
+#
+# The leading underscore is why `_uploads` cannot collide with a project
+# directory: projectName is constrained to ^[a-z0-9-]{3,20}$ and cannot begin
+# with one. So this rule can never accidentally ignore a real tenant.
+#
+# THE DEMO CORPUS IS DIFFERENT AND IS COMMITTED —
+# templates/catalog/rag-stack/demo-corpus/ is part of the catalogue, written for
+# this repository, and is what gets indexed when a PI uploads nothing.
+tenants/_uploads/
+
+# ===========================================================================
+# DELIBERATELY NOT IGNORED — do not "tidy" these away
+# ===========================================================================
+#
+# tenants/*/rendered/
+#   Studio invariant (a) — render before apply. Studio writes every manifest to
+#   tenants/<project>/rendered/ BEFORE applying it, and applies the file it wrote.
+#   Those files are the evidence that a Studio-provisioned project is as
+#   reviewable, diffable and reproducible as a hand-written one. They look like
+#   build output and they are not: they are the artifact the invariant exists to
+#   produce. Ignoring them would silently break the §1 rule with a UI in front of it.
+#
+# host/serving/**, host/cni/**  (~263,000 lines of vendored upstream YAML)
+#   cert-manager, Knative Serving, net-kourier, KServe and Calico are vendored
+#   rather than applied from a URL, so the EXACT BYTES installed are in git and a
+#   re-run is reproducible offline — which is the demo condition (CLAUDE.md §6).
+#   They are marked linguist-vendored in .gitattributes so they do not distort
+#   GitHub's language statistics; that is a display concern, not an ignore rule.
+# ===========================================================================

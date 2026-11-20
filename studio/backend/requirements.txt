@@ -1,0 +1,71 @@
+# ===========================================================================
+# HIVE STUDIO BFF — DEPENDENCIES
+# ===========================================================================
+# Install into the venv, which is machine-local and gitignored:
+#
+#   python3 -m venv studio/backend/.venv
+#   studio/backend/.venv/bin/pip install -r studio/backend/requirements.txt
+#
+# PINNED TO EXACT VERSIONS (==), not ranges. This repository is a rehearsal that
+# gets migrated to the official platform (CLAUDE.md §1), and "it worked on the
+# laptop" is only useful if the thing that worked can be reconstructed. The same
+# versions are recorded in VERSIONS.md per the §5 working agreement.
+#
+# Upgrading is a deliberate act: change a pin here, re-run the smoke script, and
+# update the VERSIONS.md row in the same commit.
+#
+# ---------------------------------------------------------------------------
+# WHY THESE FIVE, AND NOTHING ELSE
+# ---------------------------------------------------------------------------
+# The BFF's job is small and the dependency list should stay that way. Notably
+# ABSENT, and deliberately:
+#
+#   * NO SQLAlchemy or other ORM — the registry is two tables and stdlib sqlite3
+#     is enough (see app/db.py). An ORM would add a migration story to a database
+#     that holds intent and history only.
+#   * NO Kubernetes client — the pipeline shells out to kubectl and vcluster, the
+#     same commands a human would run and the same ones documented in the gate
+#     reports. A Python client would be a second, divergent way to talk to the
+#     cluster.
+#   * NO CORS middleware package — the Vite dev server proxies /api to :8000, so
+#     the browser is same-origin (CLAUDE.md §6).
+# ===========================================================================
+
+# The web framework. Provides the routes, the OpenAPI schema at /docs, and the
+# request/response validation that comes from the Pydantic models in app/schema.py.
+fastapi==0.141.1
+
+# The ASGI server. The [standard] extra is what supplies --reload (via watchfiles)
+# and the faster httptools/uvloop paths; plain `uvicorn` has no file watching, so
+# the documented dev command in scripts/studio-backend.sh would not work.
+uvicorn[standard]==0.52.4
+
+# Pydantic v2 specifically. app/schema.py uses v2-only API — model_validate,
+# model_dump, ConfigDict(extra="forbid") — so a v1 install fails at import rather
+# than misbehaving. FastAPI would pull it in anyway; it is pinned explicitly
+# because the schema layer is written against it directly.
+pydantic==2.13.4
+
+# Parses the catalogue. safe_load only — a catalogue file is data and must never
+# be able to construct arbitrary Python objects (app/catalog.py).
+PyYAML==6.0.3
+
+# The HTTP client for the playground's server-side call path. The playground
+# invokes a model THROUGH the BFF over port 18080, never from the browser
+# directly, because a local endpoint is only reachable via a port-forward with a
+# Host header — a local shortcut that must not leak into the browser as a URL
+# shape production will not have (CLAUDE.md §6). Not yet used in S1.
+httpx==0.28.1
+
+# Parses multipart/form-data, which is how the browser sends a corpus to
+# POST /api/uploads. Starlette raises at IMPORT TIME if a route declares an
+# UploadFile without it installed, so this is not optional once the RAG stack's
+# upload endpoint exists — the console would refuse to start rather than fail
+# the first upload.
+#
+# Pure Python (python_multipart-0.0.32-py3-none-any.whl), so the arm64 question
+# does not arise. It is the only dependency added for the RAG stack: the BFF
+# still shells out to kubectl rather than using a Kubernetes client, and it
+# talks to Qdrant over plain HTTP with the httpx it already had, so
+# qdrant-client is a dependency of the toolkit IMAGE and not of this process.
+python-multipart==0.0.32

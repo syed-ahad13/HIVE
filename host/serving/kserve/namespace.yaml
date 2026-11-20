@@ -1,0 +1,15 @@
+# The namespace for the ONE central KServe installation (CLAUDE.md invariant §2.2).
+#
+# The released kserve.yaml manifest does NOT contain a Namespace object — it
+# assumes `kserve` already exists (the Helm chart creates it via
+# --create-namespace). Applying kserve.yaml to a cluster without this namespace
+# fails with a wall of `namespaces "kserve" not found` errors, so this must be
+# applied first.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kserve
+  labels:
+    # Marks this as HIVE platform infrastructure rather than a tenant namespace.
+    # Tenant namespaces are p-inf-* and carry hive.ksl/expiry; this one never expires.
+    hive.ksl/component: serving

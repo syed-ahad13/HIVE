@@ -1,0 +1,37 @@
+{
+  "status": "completed",
+  "note": null,
+  "model": {
+    "id": "sklearn-iris",
+    "servedAs": "proj",
+    "interface": "predict-v1",
+    "invokePath": "/v1/models/{name}:predict",
+    "healthPathThatAnswered": "/health"
+  },
+  "input": {
+    "path": "/mnt/scratch/input/iris-5000.csv",
+    "format": "csv",
+    "fields": [
+      "sepal_length",
+      "sepal_width",
+      "petal_length",
+      "petal_width"
+    ],
+    "rowsRequested": 200,
+    "rowsFound": 200
+  },
+  "parameters": {
+    "maxRows": 200,
+    "batchSize": 64,
+    "concurrency": null,
+    "maxFailureRatePct": 10,
+    "promptTemplate": null
+  },
+  "totals": {
+    "rowsProcessed": 200,
+    "rowsFailed": 0,
+    "rowsAttempted": 200,
+    "durationSeconds": 0.02,
+    "rowsPerSecond": 8150.47
+  }
+}

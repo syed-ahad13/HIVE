@@ -1,0 +1,32 @@
+# Calico v3.32.1 — Installation CR for the HIVE-LOCAL host cluster.
+#
+# Derived from the upstream manifests/custom-resources.yaml for v3.32.1, with the
+# optional Goldmane flow aggregator and Whisker observability UI removed: they are
+# not needed for HIVE-LOCAL and cost memory on a single MacBook M2 Pro. The
+# Installation and APIServer CRs are kept as upstream ships them.
+#
+# cidr MUST match networking.podSubnet in ../kind-config.yaml (192.168.0.0/16).
+apiVersion: operator.tigera.io/v1
+kind: Installation
+metadata:
+  name: default
+spec:
+  # Configures Calico networking.
+  calicoNetwork:
+    ipPools:
+      - name: default-ipv4-ippool
+        blockSize: 26
+        cidr: 192.168.0.0/16
+        encapsulation: VXLANCrossSubnet
+        natOutgoing: Enabled
+        nodeSelector: all()
+
+---
+# The Calico API server, which serves projectcalico.org/v3 resources
+# (e.g. `kubectl get networkpolicies.projectcalico.org`). Kept so tenant
+# isolation (CLAUDE.md §2.5) can be inspected and tested directly.
+apiVersion: operator.tigera.io/v1
+kind: APIServer
+metadata:
+  name: default
+spec: {}

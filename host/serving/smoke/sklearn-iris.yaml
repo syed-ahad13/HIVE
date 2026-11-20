@@ -1,0 +1,63 @@
+# Gate G1 — end-to-end smoke test of the serving spine.
+#
+# This is the canary InferenceService. It proves the whole spine works:
+#   InferenceService -> KServe controller -> Knative Service -> Revision ->
+#   Deployment -> Pod(queue-proxy + kserve-container), reachable through Kourier.
+#
+# It lives in `default`, NOT in a tenant namespace: G1 tests the platform spine
+# before any tenancy exists. Tenant InferenceServices arrive in p-inf-* later.
+#
+# Model: KServe's public sklearn iris example. The storage-initializer fetches
+# gs:// anonymously, so no cloud credentials are needed.
+#
+# ---------------------------------------------------------------------------
+# WHY protocolVersion: v1 IS EXPLICIT (this is load-bearing, not decoration)
+# ---------------------------------------------------------------------------
+# THREE ClusterServingRuntimes claim modelFormat `sklearn`:
+#
+#   runtime                   autoSelect  priority  protocols  image arch
+#   kserve-mlserver           true        2         v2 only    amd64 ONLY
+#   kserve-predictiveserver   false       3         v1, v2     arm64
+#   kserve-sklearnserver      true        1         v1, v2     arm64
+#
+# KServe auto-selects among autoSelect=true runtimes, and per the CRD docs
+# ("The higher the value, the higher the priority") mlserver at priority 2
+# OUTRANKS sklearnserver at priority 1. Left to a v2 request, KServe would pick
+# kserve-mlserver — whose image (docker.io/seldonio/mlserver:1.7.1) is linux/amd64
+# only and would run under Rosetta emulation on this Apple Silicon host.
+#
+# Declaring protocolVersion: v1 makes mlserver INELIGIBLE (it supports v2 only),
+# so kserve-sklearnserver is selected deterministically — arm64-native, and
+# serving the /v1/models/<name>:predict endpoint this gate curls.
+#
+# ---------------------------------------------------------------------------
+# WHY minReplicas: 0
+# ---------------------------------------------------------------------------
+# Gate G1 must observe scale-to-zero, so the predictor has to be allowed to reach
+# zero. KServe translates minReplicas into the Knative annotation
+# autoscaling.knative.dev/min-scale, so this is the same mechanism CLAUDE.md §2.7
+# specifies for the T-SZ archetype (Inf-103) — exercised here on the canary before
+# any tenant depends on it.
+#
+# Idle windows are left at Knative's defaults for this gate (stable-window 60s +
+# scale-to-zero-grace-period 30s, so ~90s to termination). Tenant T-SZ templates
+# will pin window and scale-down-delay to 60s explicitly.
+#
+# NO GPU is requested here on purpose: G1 tests the serving path, not the GPU
+# accounting proved in step 2. Keeping them separate means a G1 failure can only
+# mean the spine is broken.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: sklearn-iris
+  namespace: default
+  labels:
+    hive.ksl/gate: g1-smoke
+spec:
+  predictor:
+    minReplicas: 0
+    model:
+      modelFormat:
+        name: sklearn
+      protocolVersion: v1
+      storageUri: "gs://kfserving-examples/models/sklearn/1.0/model"

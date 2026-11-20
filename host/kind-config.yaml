@@ -1,0 +1,27 @@
+# HIVE-LOCAL host cluster: `hive-host`
+#
+# One control-plane node + two workers. Two workers so that scheduling, tenant
+# ResourceQuota ceilings, and the fake `nvidia.com/gpu` extended resource have
+# more than a single node to spread across (invariant §2.1 / §2.3 in CLAUDE.md).
+#
+# WHY disableDefaultCNI + Calico:
+#   kind's default CNI is kindnet, and kindnet does NOT enforce NetworkPolicy —
+#   NetworkPolicy objects are accepted by the API server but silently never take
+#   effect. HIVE-LOCAL's tenant isolation (invariant §2.5: default-deny ingress
+#   NetworkPolicy on every tenant namespace, allowing only same-namespace,
+#   kourier-system, knative-serving and kserve) depends on real enforcement, so a
+#   non-enforcing CNI would make the isolation tests pass vacuously. We therefore
+#   disable the default CNI and install Calico, which does enforce NetworkPolicy.
+#
+# podSubnet is set to Calico's own default (192.168.0.0/16) so the kind config and
+# the Calico Installation CR agree on one CIDR.
+apiVersion: kind.x-k8s.io/v1alpha4
+kind: Cluster
+name: hive-host
+networking:
+  disableDefaultCNI: true
+  podSubnet: "192.168.0.0/16"
+nodes:
+  - role: control-plane
+  - role: worker
+  - role: worker

@@ -1,0 +1,358 @@
+{
+  "id": "proj",
+  "rows": [
+    {
+      "row_index": 0,
+      "input": "sepal_length: 4.9\nsepal_width: 3.5\npetal_length: 1.4\npetal_width: 0.1",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 1,
+      "input": "sepal_length: 5.5\nsepal_width: 3.0\npetal_length: 4.6\npetal_width: 1.4",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 2,
+      "input": "sepal_length: 6.4\nsepal_width: 2.7\npetal_length: 5.1\npetal_width: 1.6",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 3,
+      "input": "sepal_length: 5.6\nsepal_width: 3.7\npetal_length: 1.4\npetal_width: 0.2",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 4,
+      "input": "sepal_length: 6.1\nsepal_width: 2.8\npetal_length: 3.5\npetal_width: 1.3",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 5,
+      "input": "sepal_length: 6.2\nsepal_width: 3.1\npetal_length: 5.7\npetal_width: 2.0",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 6,
+      "input": "sepal_length: 5.3\nsepal_width: 3.6\npetal_length: 1.2\npetal_width: 0.2",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 7,
+      "input": "sepal_length: 7.1\nsepal_width: 3.1\npetal_length: 5.1\npetal_width: 1.3",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 8,
+      "input": "sepal_length: 7.7\nsepal_width: 2.9\npetal_length: 7.2\npetal_width: 1.8",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 9,
+      "input": "sepal_length: 5.9\nsepal_width: 2.9\npetal_length: 1.7\npetal_width: 0.2",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 10,
+      "input": "sepal_length: 5.4\nsepal_width: 2.6\npetal_length: 3.9\npetal_width: 1.2",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 11,
+      "input": "sepal_length: 6.0\nsepal_width: 2.9\npetal_length: 5.9\npetal_width: 2.1",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 12,
+      "input": "sepal_length: 4.7\nsepal_width: 3.0\npetal_length: 1.5\npetal_width: 0.3",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 13,
+      "input": "sepal_length: 6.0\nsepal_width: 2.5\npetal_length: 4.6\npetal_width: 1.2",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 14,
+      "input": "sepal_length: 6.8\nsepal_width: 2.8\npetal_length: 5.8\npetal_width: 1.6",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 15,
+      "input": "sepal_length: 4.7\nsepal_width: 2.7\npetal_length: 1.8\npetal_width: 0.2",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 16,
+      "input": "sepal_length: 5.8\nsepal_width: 3.0\npetal_length: 5.2\npetal_width: 1.5",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 17,
+      "input": "sepal_length: 7.2\nsepal_width: 3.4\npetal_length: 6.1\npetal_width: 2.0",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 18,
+      "input": "sepal_length: 4.8\nsepal_width: 3.3\npetal_length: 1.5\npetal_width: 0.2",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 19,
+      "input": "sepal_length: 5.2\nsepal_width: 3.0\npetal_length: 4.1\npetal_width: 1.5",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 20,
+      "input": "sepal_length: 7.3\nsepal_width: 3.1\npetal_length: 5.8\npetal_width: 2.3",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 21,
+      "input": "sepal_length: 5.1\nsepal_width: 3.4\npetal_length: 1.5\npetal_width: 0.3",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 22,
+      "input": "sepal_length: 6.6\nsepal_width: 3.0\npetal_length: 4.7\npetal_width: 1.5",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 23,
+      "input": "sepal_length: 6.1\nsepal_width: 3.0\npetal_length: 6.0\npetal_width: 1.9",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 24,
+      "input": "sepal_length: 4.5\nsepal_width: 3.8\npetal_length: 1.6\npetal_width: 0.2",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 25,
+      "input": "sepal_length: 6.0\nsepal_width: 2.4\npetal_length: 3.8\npetal_width: 1.1",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 26,
+      "input": "sepal_length: 6.6\nsepal_width: 2.5\npetal_length: 5.1\npetal_width: 1.7",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 27,
+      "input": "sepal_length: 5.3\nsepal_width: 3.0\npetal_length: 1.3\npetal_width: 0.2",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 28,
+      "input": "sepal_length: 5.2\nsepal_width: 3.3\npetal_length: 4.0\npetal_width: 1.2",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 29,
+      "input": "sepal_length: 5.6\nsepal_width: 3.0\npetal_length: 5.5\npetal_width: 1.9",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 30,
+      "input": "sepal_length: 4.9\nsepal_width: 3.1\npetal_length: 1.5\npetal_width: 0.2",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 31,
+      "input": "sepal_length: 6.0\nsepal_width: 2.3\npetal_length: 4.1\npetal_width: 1.4",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 32,
+      "input": "sepal_length: 5.6\nsepal_width: 3.5\npetal_length: 6.1\npetal_width: 2.1",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 33,
+      "input": "sepal_length: 4.9\nsepal_width: 3.5\npetal_length: 1.4\npetal_width: 0.1",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 34,
+      "input": "sepal_length: 5.7\nsepal_width: 2.3\npetal_length: 4.3\npetal_width: 1.4",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 35,
+      "input": "sepal_length: 5.8\nsepal_width: 2.6\npetal_length: 5.0\npetal_width: 2.2",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 36,
+      "input": "sepal_length: 4.5\nsepal_width: 3.1\npetal_length: 1.5\npetal_width: 0.2",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 37,
+      "input": "sepal_length: 5.7\nsepal_width: 2.8\npetal_length: 4.0\npetal_width: 1.3",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 38,
+      "input": "sepal_length: 6.6\nsepal_width: 2.9\npetal_length: 5.8\npetal_width: 1.8",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 39,
+      "input": "sepal_length: 4.6\nsepal_width: 3.0\npetal_length: 1.7\npetal_width: 0.1",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 40,
+      "input": "sepal_length: 6.3\nsepal_width: 2.1\npetal_length: 3.9\npetal_width: 1.1",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 41,
+      "input": "sepal_length: 6.6\nsepal_width: 3.4\npetal_length: 5.5\npetal_width: 2.1",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 42,
+      "input": "sepal_length: 4.8\nsepal_width: 3.0\npetal_length: 1.5\npetal_width: 0.1",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 43,
+      "input": "sepal_length: 6.5\nsepal_width: 2.8\npetal_length: 4.6\npetal_width: 1.3",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 44,
+      "input": "sepal_length: 5.9\nsepal_width: 3.4\npetal_length: 5.7\npetal_width: 2.2",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 45,
+      "input": "sepal_length: 5.6\nsepal_width: 3.5\npetal_length: 1.4\npetal_width: 0.3",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 46,
+      "input": "sepal_length: 5.5\nsepal_width: 3.5\npetal_length: 4.3\npetal_width: 1.3",
+      "output": 1,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 47,
+      "input": "sepal_length: 7.7\nsepal_width: 3.7\npetal_length: 5.6\npetal_width: 1.7",
+      "output": 2,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 48,
+      "input": "sepal_length: 5.1\nsepal_width: 3.8\npetal_length: 1.4\npetal_width: 0.2",
+      "output": 0,
+      "latency_ms": 0
+    },
+    {
+      "row_index": 49,
+      "input": "sepal_length: 6.1\nsepal_width: 2.9\npetal_length: 4.2\npetal_width: 1.5",
+      "output": 1,
+      "latency_ms": 0
+    }
+  ],
+  "errors": [],
+  "summary": {
+    "status": "completed",
+    "note": null,
+    "model": {
+      "id": "sklearn-iris",
+      "servedAs": "proj",
+      "interface": "predict-v1",
+      "invokePath": "/v1/models/{name}:predict",
+      "healthPathThatAnswered": "/health"
+    },
+    "input": {
+      "path": "/mnt/scratch/input/iris-5000.csv",
+      "format": "csv",
+      "fields": [
+        "sepal_length",
+        "sepal_width",
+        "petal_length",
+        "petal_width"
+      ],
+      "rowsRequested": 200,
+      "rowsFound": 200
+    },
+    "parameters": {
+      "maxRows": 200,
+      "batchSize": 64,
+      "concurrency": null,
+      "maxFailureRatePct": 10,
+      "promptTemplate": null
+    },
+    "totals": {
+      "rowsProcessed": 200,
+      "rowsFailed": 0,
+      "rowsAttempted": 200,
+      "durationSeconds": 0.02,
+      "rowsPerSecond": 8150.47
+    }
+  },
+  "artifacts": [
+    {
+      "name": "errors.jsonl",
+      "bytes": 0
+    },
+    {
+      "name": "results.jsonl",
+      "bytes": 26690
+    },
+    {
+      "name": "run-summary.json",
+      "bytes": 767
+    }
+  ],
+  "resultsAvailableUntil": "2026-10-13T08:22:06Z"
+}

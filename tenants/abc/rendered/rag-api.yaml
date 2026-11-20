@@ -1,0 +1,230 @@
+# ===========================================================================
+# STUDIO FRAGMENT — RAG SERVICE (the `rag-api` resource)
+# Rendered by studio/backend into tenants/$project/rendered/rag-api.yaml
+# ===========================================================================
+# THE ENDPOINT THE PI ACTUALLY CALLS. Everything else in the project exists to
+# make this one POST work:
+#
+#   POST /chat {"question": "...", "topK": 3}
+#     -> embed the question with the SAME model the index was built with
+#     -> search Qdrant for the closest passages
+#     -> build a prompt that instructs the model to answer ONLY from them
+#     -> POST to the chat model's OpenAI-compatible endpoint
+#     -> return {answer, sources[], latencyMs, contextChars}
+#
+# The last field of that response is the one that makes RAG defensible rather
+# than magical: every answer carries the passages it came from, with their
+# source file and chunk id, so a PI can check it.
+#
+# ---------------------------------------------------------------------------
+# HOW THIS REACHES THE CHAT MODEL — THE HAIRPIN
+# ---------------------------------------------------------------------------
+# The chat model is a Knative Service behind KServe. It has no ordinary
+# ClusterIP name that routes to it: Knative routes by HOST HEADER through a
+# gateway, and the gateway is what wakes a scaled-to-zero revision. So this
+# container posts to Knative's CLUSTER-LOCAL gateway and carries the model's
+# hostname in a `Host:` header — which is exactly what any in-cluster caller
+# does, and exactly what the BFF's playground does from outside through a
+# port-forward.
+#
+#   $chat_endpoint  http://kourier-internal.kourier-system.svc.cluster.local
+#   $chat_host      the hostname from the InferenceService's .status.url
+#
+# BOTH ARE RESOLVED AT DEPLOY TIME AND NEITHER IS CONSTRUCTED.
+#
+#   * The gateway service name was VERIFIED against the cluster
+#     (`kubectl get svc -n kourier-system` -> `kourier` LoadBalancer and
+#     `kourier-internal` ClusterIP), not assumed. `kourier` is the external
+#     one; `kourier-internal` is the cluster-local one this needs.
+#   * The host comes from `ready-check`, which reads `.status.url` LIVE. It must
+#     never be assembled: locally KServe publishes a `-predictor` segment that
+#     production will not have (DEVIATIONS.md), so any code that builds a
+#     hostname by hand breaks at migration. This container is handed the answer.
+#
+# GOING THROUGH THE GATEWAY RATHER THAN AT THE POD IS WHAT MAKES SLEEP WORK. On
+# an on-demand project the model has no pods at all when idle; a direct pod
+# address would fail, while a request through the gateway wakes it and waits.
+# The ~15 seconds the wizard promises is that wake, and it is why the HTTP
+# timeout in api.py is 180s rather than something that looks more reasonable.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS A PLAIN DEPLOYMENT AND NOT A SECOND InferenceService
+# ---------------------------------------------------------------------------
+# It is not a model. It holds no weights on the GPU, it is a few hundred
+# milliseconds of CPU per request, and it is the thing that must be AWAKE in
+# order for the sleeping model behind it to be woken. Running it as a KServe
+# service would put it against `count/inferenceservices` and, if it scaled to
+# zero, would mean a cold start in front of a cold start.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT
+# ---------------------------------------------------------------------------
+# Two passes: `#@if` / `#@end` blocks first (none here), then string.Template
+# substitution. A LITERAL dollar sign must be written `$`.
+#
+# Placeholders:
+#   $project               project name
+#   $rag_image             hive-local/rag-toolkit:<tag>
+#   $collection            the Qdrant collection, "<project>-corpus"
+#   $embed_fastembed_name  the SAME fastembed id the ingestion Job used
+#   $embed_dims            the model's vector width (asserted at startup)
+#   $top_k                 the PI's default number of passages
+#   $chat_endpoint         Knative's cluster-local gateway, resolved live
+#   $chat_host             the chat model's hostname, from .status.url
+#   $chat_model_id         the catalogue id, sent as the OpenAI `model` field
+# ===========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: abc-rag
+  namespace: p-abc
+  labels:
+    hive.ksl/project: abc
+    hive.ksl/role: rag-api
+    hive.ksl/template: studio-rag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      hive.ksl/project: abc
+      hive.ksl/role: rag-api
+  # ---------------------------------------------------------------------
+  # `Recreate`, and for a DIFFERENT reason than Qdrant's.
+  # ---------------------------------------------------------------------
+  # This pod mounts `models` READ-ONLY, so a second replica could attach it —
+  # ReadWriteOnce permits many readers on one node. The reason is memory: each
+  # replica loads its own copy of the ONNX embedding session, and a rolling
+  # update means two of them at once against a tenant memory ceiling that is
+  # also holding the chat model, Qdrant and a vCluster control plane. A few
+  # seconds of downtime on redeploy is the better trade.
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        hive.ksl/project: abc
+        hive.ksl/role: rag-api
+    spec:
+      containers:
+        - name: rag
+          image: hive-local/rag-toolkit:0.1.0
+          # Built locally and `kind load`ed; it exists in no registry.
+          imagePullPolicy: Never
+          # uvicorn, not `python api.py`. The module path is /app/api.py, so
+          # `api:app` resolves with /app on the path — set by WORKDIR in the
+          # Dockerfile. One worker on purpose: a second would double the ONNX
+          # session's memory for a service whose load is one PI asking questions.
+          command:
+            - uvicorn
+            - api:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8080"
+            - --workers
+            - "1"
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            # --- retrieval ---------------------------------------------
+            - name: QDRANT_URL
+              value: "http://abc-qdrant:6333"
+            - name: COLLECTION
+              value: "abc-corpus"
+            - name: TOP_K
+              value: "1"
+            # --- embedding, THE SAME MODEL THE INDEX WAS BUILT WITH -----
+            # If these ever disagreed with the ingestion Job's, the question and
+            # the documents would be embedded into different vector spaces and
+            # every search would return confident nonsense with no error
+            # anywhere. Both are rendered from the one catalogue entry the PI
+            # chose, which is what makes disagreement impossible rather than
+            # merely unlikely.
+            - name: MODELS_DIR
+              value: /mnt/models
+            # Same directory the ingestion Job read from, from the same
+            # catalogue field — see ingestion-job.yaml.tmpl.
+            - name: EMBED_SUBPATH
+              value: "embed"
+            - name: EMBED_MODEL
+              value: "BAAI/bge-small-en-v1.5"
+            - name: EMBED_DIMS
+              value: "384"
+            # --- the chat model, via the hairpin (see the header) -------
+            - name: CHAT_ENDPOINT
+              value: "http://kourier-internal.kourier-system.svc.cluster.local"
+            - name: CHAT_HOST
+              value: "abc-x-default-x-abc-predictor.p-abc.hive.local"
+            - name: CHAT_MODEL_ID
+              value: "qwen2.5-0.5b-instruct-q4"
+            # Belt and braces on top of api.py's own local_files_only=True: even
+            # if some future code path forgot to pass it, huggingface_hub
+            # refuses to reach the network with this set. The query path must
+            # never download anything (see model-seed.yaml.tmpl).
+            - name: HF_HUB_OFFLINE
+              value: "1"
+          volumeMounts:
+            # READ-ONLY, and load-bearing rather than tidy: it is what makes
+            # "this container cannot fetch a model at query time" a property of
+            # the filesystem instead of a property of the code.
+            - name: models
+              mountPath: /mnt/models
+              readOnly: true
+          # /healthz checks BOTH dependencies — Qdrant reachable AND the
+          # embedder loaded — so a pod that came up before Qdrant did, or whose
+          # ONNX cache is missing, never joins the Service. See api.py.
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            # The embedding session takes a few seconds to load from disk.
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            timeoutSeconds: 5
+            failureThreshold: 24
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: 300m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models
+---
+# The endpoint. ClusterIP, because a PI reaches it through the Studio
+# playground, which proxies through the BFF — never from the browser, because a
+# local endpoint is only reachable via a port-forward and that URL shape does
+# not exist in production (CLAUDE.md §6).
+#
+# The address the project page reports as `ragEndpointUrl` is this Service's
+# in-cluster name: http://$project-rag.p-$project.svc.cluster.local:8080
+apiVersion: v1
+kind: Service
+metadata:
+  name: abc-rag
+  namespace: p-abc
+  labels:
+    hive.ksl/project: abc
+    hive.ksl/role: rag-api
+    hive.ksl/template: studio-rag
+spec:
+  type: ClusterIP
+  selector:
+    hive.ksl/project: abc
+    hive.ksl/role: rag-api
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http

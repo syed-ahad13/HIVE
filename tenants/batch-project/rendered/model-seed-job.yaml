@@ -1,0 +1,147 @@
+# ===========================================================================
+# STUDIO FRAGMENT — MODEL SEED JOB (BATCH INFERENCE)
+# Rendered by studio/backend into tenants/$project/rendered/model-seed-job.yaml
+# ===========================================================================
+# Downloads the chosen model from the curated catalogue into the project's own
+# `models` PVC, so the serving runtime reads it from local disk rather than the
+# internet. Structurally identical to inference-endpoint's seed Job, and
+# deliberately so: a batch run and a served endpoint stage the same model the
+# same way, from the same reviewed URL.
+#
+# ---------------------------------------------------------------------------
+# THIS IS THE ONLY NETWORK EGRESS IN THE PIPELINE
+# ---------------------------------------------------------------------------
+# And it is closed: `seedUrl` comes verbatim from templates/catalog/models.yaml,
+# a PI cannot supply one, and every possible value is in that file, in git, in a
+# diff. Nothing else in the run reaches the network — the driver talks to the
+# sidecar over localhost, and the sidecar reads /mnt/models.
+#
+# ---------------------------------------------------------------------------
+# IT ALSO PINS `models` TO A NODE, WHICH MATTERS LATER
+# ---------------------------------------------------------------------------
+# This is the first pod to mount `models`, so local-path binds that volume to
+# whichever node this Job lands on. Everything afterwards that touches `models`
+# — the staging pod's fence, the batch Job's two containers — is pinned to the
+# same node as a consequence. See the storage note in namespace-pack.yaml.tmpl.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT
+# ---------------------------------------------------------------------------
+# Two passes: `#@if` / `#@end` conditional blocks first (this file has none),
+# then string.Template substitution. A LITERAL dollar sign must be written `$`.
+# THE EMBEDDED PYTHON BELOW DELIBERATELY CONTAINS NO `$` — no f-string with a
+# shell variable, no string.Template of its own. Introducing one silently breaks
+# rendering, and the error surfaces as a KeyError in the pipeline rather than as
+# anything to do with this file.
+#
+# Placeholders used here:
+#   $project          project name
+#   $model_seed_url   the chosen model's `seedUrl`, verbatim from models.yaml
+#   $model_subpath    the chosen model's `storageSubpath`; "" means the claim ROOT
+#
+# `$model_subpath` may be EMPTY, and the script handles that without producing a
+# doubled slash — see the normpath call.
+#
+# python:3.11-slim publishes linux/arm64, so this runs natively on Apple Silicon
+# (CLAUDE.md working agreements). The download uses ONLY the standard library,
+# so the Job needs no package index and cannot be broken by one being down.
+# ===========================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-batch-project
+  namespace: p-batch-project
+  labels:
+    hive.ksl/project: batch-project
+    hive.ksl/role: seed
+    hive.ksl/template: studio-batch
+spec:
+  # A network download; transient failure is normal and worth retrying. The
+  # script skips a file already on disk, so a retry resumes rather than restarts.
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        hive.ksl/project: batch-project
+        hive.ksl/role: seed
+    spec:
+      # `Never` replaces a failed pod with a new one (counted against
+      # backoffLimit) rather than restarting it in place, which keeps the
+      # failure visible in `kubectl get pods` instead of hiding it in a restart
+      # count. The provisioning UI reads that.
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: python:3.11-slim
+          volumeMounts:
+            # READ-WRITE. This is the only workload in the project that ever
+            # writes to `models`; the batch Job's runtime sidecar mounts it
+            # read-only.
+            - name: models
+              mountPath: /mnt/models
+          command:
+            - python3
+            - -c
+            - |
+              import os, sys, urllib.request, urllib.parse
+
+              URL     = "https://storage.googleapis.com/kfserving-examples/models/sklearn/1.0/model/model.joblib"
+              SUBPATH = ""
+
+              # normpath collapses "/mnt/models/" + "" into "/mnt/models" rather
+              # than leaving "/mnt/models//". Harmless on POSIX, but the serving
+              # runtime's own args point at /mnt/models exactly, so keeping the
+              # two consistent is the point.
+              dest_dir = os.path.normpath(os.path.join("/mnt/models", SUBPATH))
+
+              # Filename comes from the URL, so the artefact on disk keeps the
+              # name the runtime expects: model.joblib for sklearn (whose server
+              # globs the directory for exactly one .joblib/.pkl/.pickle), *.gguf
+              # for llama.cpp (whose command globs for exactly one .gguf).
+              filename = os.path.basename(urllib.parse.urlparse(URL).path)
+              if not filename:
+                  print("ERROR: could not derive a filename from " + URL, file=sys.stderr)
+                  sys.exit(1)
+              dst = os.path.join(dest_dir, filename)
+
+              os.makedirs(dest_dir, exist_ok=True)
+
+              # IDEMPOTENT. Re-running must never corrupt a good artefact — and
+              # it WILL be re-run: a retried deployment, a re-applied fragment,
+              # or a backoffLimit retry after a later step failed all land here.
+              if os.path.exists(dst) and os.path.getsize(dst) > 0:
+                  print("already seeded: " + dst + " (" + str(os.path.getsize(dst)) + " bytes) - nothing to do")
+                  sys.exit(0)
+
+              print("downloading " + URL)
+              print("       into " + dst)
+
+              # Download to a temporary name and rename into place. An
+              # interrupted download must never leave a truncated file that the
+              # idempotency check above would mistake for a complete one.
+              tmp = dst + ".part"
+              with urllib.request.urlopen(URL, timeout=600) as response:
+                  if response.status != 200:
+                      print("ERROR: unexpected HTTP status " + str(response.status), file=sys.stderr)
+                      sys.exit(1)
+                  # Streamed in chunks rather than read() in one go: model
+                  # weights can be far larger than the container's memory limit.
+                  with open(tmp, "wb") as out:
+                      while True:
+                          chunk = response.read(1024 * 1024)
+                          if not chunk:
+                              break
+                          out.write(chunk)
+
+              size = os.path.getsize(tmp)
+              if size == 0:
+                  print("ERROR: downloaded 0 bytes", file=sys.stderr)
+                  sys.exit(1)
+
+              os.rename(tmp, dst)
+              print("seeded " + dst + " (" + str(size) + " bytes)")
+              print("contents of " + dest_dir + ": " + str(os.listdir(dest_dir)))
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models

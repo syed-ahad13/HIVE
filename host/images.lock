@@ -1,0 +1,26 @@
+# host/images.lock — the digests of the images actually present in cluster
+# 'hive-host', read back from its nodes by scripts/pull-images.sh.
+#
+# This is the CLAUDE.md §5 record, written at install time by the thing doing
+# the installing rather than from memory afterwards. A tag can be re-pushed;
+# the digest on the line below is what ran. Commit it.
+# Generated: 2026-08-28T09:56:12Z
+
+docker.io/envoyproxy/envoy:v1.37-latest                                                                  docker.io/envoyproxy/envoy@sha256:ea33a83e4bb1b34b9345f1d98930af9c70d19a0ee1680d9ff087789636fdbc34
+docker.io/kserve/kserve-controller:v0.20.0                                                               docker.io/kserve/kserve-controller@sha256:61850d24e78dba875b8c78215e3f9f9dbcec52340eeb18b293978dad1797f653
+docker.io/kserve/kserve-localmodel-controller:v0.20.0                                                    docker.io/kserve/kserve-localmodel-controller@sha256:9cdcf5594fb6a320fd3da06aaf2f893ac89db4d2d69669e926771e9d3205a50b
+docker.io/kserve/kserve-localmodelnode-agent:v0.20.0                                                     docker.io/kserve/kserve-localmodelnode-agent@sha256:a3d957355e194363df81ad95d76478650a81610df338ea8a3d4d04fb7e39377c
+docker.io/kserve/llmisvc-controller:v0.20.0                                                              docker.io/kserve/llmisvc-controller@sha256:d502b5b56713b12d0e04127cdea76bd935402a0d7870d3c30dbf730349d86a95
+docker.io/kserve/sklearnserver:v0.20.0                                                                   docker.io/kserve/sklearnserver@sha256:2838a5d73b8a9fe99148236a651c462b34178415796d71fd9fa6770ed58b774d
+docker.io/kserve/storage-initializer:v0.20.0                                                             docker.io/kserve/storage-initializer@sha256:9bea2bfe436307698a8b0c4d99bc2cdd6935158aadf2709c147d145471fe76f9
+docker.io/library/python:3.11-slim                                                                       docker.io/library/python@sha256:1042b61448fef4ba92d16a8c7eb4996d027568ce64792a7877fd88511e0af7c6
+gcr.io/knative-releases/knative.dev/serving/cmd/activator@sha256:e5ab46f3b73fa2e3898fe47f6a3a0c2bd765596f4fb36ceb4c28c35d0a74b2e5 gcr.io/knative-releases/knative.dev/serving/cmd/activator@sha256:e5ab46f3b73fa2e3898fe47f6a3a0c2bd765596f4fb36ceb4c28c35d0a74b2e5
+gcr.io/knative-releases/knative.dev/serving/cmd/autoscaler@sha256:879da127b23db65d862cafa6b23fb987381d0e44150f0027d44e1f5aee83bde2 gcr.io/knative-releases/knative.dev/serving/cmd/autoscaler@sha256:879da127b23db65d862cafa6b23fb987381d0e44150f0027d44e1f5aee83bde2
+gcr.io/knative-releases/knative.dev/serving/cmd/controller@sha256:ca5062ece0329d002a81940cf4268d7898866434d70049bb93f27d3a786d3292 gcr.io/knative-releases/knative.dev/serving/cmd/controller@sha256:ca5062ece0329d002a81940cf4268d7898866434d70049bb93f27d3a786d3292
+gcr.io/knative-releases/knative.dev/serving/cmd/queue@sha256:a3cc71ce80dbc6df8781f15eac2cf3531a4c9815271799afd8776bef9e6aeaf2 gcr.io/knative-releases/knative.dev/serving/cmd/queue@sha256:a3cc71ce80dbc6df8781f15eac2cf3531a4c9815271799afd8776bef9e6aeaf2
+gcr.io/knative-releases/knative.dev/serving/cmd/webhook@sha256:3846e9a416665c5b9ec2e4de246cfcb5c4ab0d01ba19348aa008caf30144b650 gcr.io/knative-releases/knative.dev/serving/cmd/webhook@sha256:3846e9a416665c5b9ec2e4de246cfcb5c4ab0d01ba19348aa008caf30144b650
+quay.io/brancz/kube-rbac-proxy:v0.18.0                                                                   quay.io/brancz/kube-rbac-proxy@sha256:754ab2a723c8fc7ea8e09ae1224f8af5be91849b8b2f2a3735c6237f1c534187
+quay.io/jetstack/cert-manager-cainjector:v1.21.1                                                         quay.io/jetstack/cert-manager-cainjector@sha256:ccf6b919ec0500745a47a910118f834f9636d0aac1ff221245cd2557ed8c7c98
+quay.io/jetstack/cert-manager-controller:v1.21.1                                                         quay.io/jetstack/cert-manager-controller@sha256:416a2d76870d996460e62bd7f521bf14fa017be9e3e904aab92163a331fcb61a
+quay.io/jetstack/cert-manager-webhook:v1.21.1                                                            quay.io/jetstack/cert-manager-webhook@sha256:d8b3961b51c8c7320633f8208dc46bf88aa13804d0f7cbe48a096b2c523cee42
+quay.io/tigera/operator:v1.42.3                                                                          quay.io/tigera/operator@sha256:4f32a054d5da52731f5f633816ac29cd98ffe97f69903cc04ec5ac60c86e6a02

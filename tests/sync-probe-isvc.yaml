@@ -1,0 +1,29 @@
+# Gate S1 probe — the minimal InferenceService a tenant would author.
+#
+# Applied INSIDE a tenant vCluster (not on the host). It exists to prove the sync
+# contract, not to serve anything useful:
+#
+#   1. the tenant can author an InferenceService in their own cluster;
+#   2. a mirrored copy appears in their HOST namespace;
+#   3. the ONE central KServe on the host reconciles it to READY;
+#   4. readiness and the URL propagate back INSIDE the vCluster;
+#   5. deleting it inside garbage-collects the host copy.
+#
+# Deliberately minimal: no GPU (that is step 2's proof, and mixing them would give a
+# failure two possible causes) and no archetype annotations (that is step 7's).
+#
+# Apply with:
+#   vcluster connect inf-101 -n p-inf-101 -- kubectl apply -f tests/sync-probe-isvc.yaml
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: sync-probe
+  namespace: default
+  labels:
+    hive.ksl/gate: s1-sync
+spec:
+  predictor:
+    model:
+      modelFormat:
+        name: sklearn
+      storageUri: "gs://kfserving-examples/models/sklearn/1.0/model"

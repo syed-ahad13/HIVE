@@ -1,0 +1,268 @@
+# ===========================================================================
+# STUDIO FRAGMENT — NAMESPACE PACK (RAG STACK)
+# Rendered by studio/backend into tenants/$project/rendered/namespace-pack.yaml
+# ===========================================================================
+# The HOST-side ground for a Studio-provisioned RAG project. This is the
+# inference-endpoint pack with THREE differences, and every one of them exists
+# because a RAG project runs more in this namespace than an inference project
+# does:
+#
+#   1. A THIRD PVC, `qdrant-data`, for the vector index.
+#   2. The `rag-small` quota profile — 10Gi of storage and 6 PVCs — instead of
+#      the plain tier's 12Gi. See the arithmetic at the quota.
+#   3. hive.ksl/template: studio-rag instead of studio-inference.
+#
+# Everything else is identical BY DESIGN, not by accident: a RAG tenant is a
+# tenant, gets the same GPU ceiling, the same LimitRange, the same lifetime
+# clock, and the same protection from the platform's own namespaces.
+#
+# ---------------------------------------------------------------------------
+# ABOUT THAT LABEL — IT IS A SAFETY BOUNDARY, NOT A TAG
+# ---------------------------------------------------------------------------
+# CLAUDE.md Studio invariant (d): "Studio only acts on namespaces carrying
+# hive.ksl/template: studio-inference." That value is now one of TWO, and the
+# backend checks membership of a set rather than string equality
+# (executor_real.STUDIO_TEMPLATE_LABELS). Getting this wrong in either direction
+# is bad in a specific way: too narrow and a PI cannot delete their own RAG
+# project, too wide and Studio would consider p-inf-101 fair game. The set is
+# defined in exactly one place and both values are literals.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT — READ BEFORE EDITING
+# ---------------------------------------------------------------------------
+# Two passes, in this order:
+#
+#   PASS 1 — CONDITIONAL BLOCKS. Lines between `#@if <key>=<value>` and `#@end`
+#     are KEPT only when the render facts contain that key/value pair; otherwise
+#     the whole block is dropped. Marker lines are always removed. Blocks do not
+#     nest.  Facts for this fragment:  tier = small | medium
+#
+#   PASS 2 — string.Template SUBSTITUTION over what pass 1 left. Placeholders
+#     are $name / ${name}. A LITERAL dollar sign must be written `$`.
+#
+# Placeholders used here:
+#   $project      the PI's project name, validated against ^[a-z0-9-]{3,20}$
+#                 and against the reserved list, SERVER-SIDE
+#   $tier         small | medium
+#   $ttl_expiry   RFC3339 UTC instant, provisioning time + durationDays
+# ===========================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: p-ksl-docs
+  labels:
+    hive.ksl/project: ksl-docs
+    hive.ksl/tier: small
+    # THE OWNERSHIP LABEL. See the header: this is what Studio checks before it
+    # writes to or deletes anything, and it is why a Studio project can never be
+    # confused with p-inf-101 (t-ao) or p-inf-103 (t-sz).
+    hive.ksl/template: studio-rag
+    hive.ksl/kind: tenant
+  annotations:
+    # THE LIFETIME CLOCK (CLAUDE.md §2.6). RFC3339, UTC. The host reconciler
+    # CronJob reads this and drives Active -> Draining -> Suspended -> Deleted.
+    # Studio only SETS it and must never move it once written.
+    #
+    # For a RAG project this annotation is also the deletion guarantee the
+    # wizard makes about the PI's documents: the corpus lives on the `scratch`
+    # PVC and the index on `qdrant-data`, both of which go when this namespace
+    # does. There is no copy anywhere else — the staging pod that carried the
+    # files in is deleted by the step that created it.
+    hive.ksl/expiry: "2026-09-30T11:00:49Z"
+---
+# ===========================================================================
+# THE CEILING — profile `rag-small`
+# ===========================================================================
+# Enforced at ADMISSION TIME (CLAUDE.md §2.4): the API server refuses to create
+# an over-quota pod at all. Nothing over-quota ever runs, not even briefly.
+#
+# STORAGE IS THE NUMBER THAT MOVED, and here is the whole arithmetic:
+#
+#     models        1Gi   the chat GGUF (469MiB, measured) + the embedding
+#                         ONNX cache (67MB) = 536MiB. Half the claim, and the
+#                         reason `models` is not smaller.
+#     scratch       1Gi   the PI's uploaded corpus, staged and then indexed
+#     qdrant-data   2Gi   the vector index. 37 chunks of a demo corpus is
+#                         kilobytes; 2Gi is room for a real one.
+#     vCluster      5Gi   the control plane's own etcd claim, provisioned by
+#                         its StatefulSet INTO THIS NAMESPACE and counted here
+#     ------------------
+#     total         9Gi   against a 10Gi ceiling
+#
+# 1Gi of headroom is deliberate rather than generous: it is enough for the PI to
+# make one small claim of their own and not enough for a runaway to fill the
+# node. The failure shape if this were too low is worth remembering from step 6
+# — the vCluster StatefulSet retries forever and NO POD IS CREATED AT ALL, so
+# `kubectl get pods` is empty and the explanation lives only in the
+# StatefulSet's events.
+#
+# PVC COUNT: those same four. 6 leaves the PI two claims of their own.
+#
+# GPU, cpu, memory and count/inferenceservices are IDENTICAL to the plain tier,
+# because RAG adds no GPU workload and no second InferenceService: Qdrant, the
+# ingestion Job and the RAG service are all CPU-only, and the embedding model
+# runs in-process rather than as a served model (models.yaml, `embed` section).
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tier-quota
+  namespace: p-ksl-docs
+  labels:
+    hive.ksl/project: ksl-docs
+    hive.ksl/tier: small
+    hive.ksl/quota-profile: rag-small
+spec:
+  hard:
+    # !! 2, NOT 1, AND THE REASON MATTERS !!
+    #
+    # The Small tier is ONE GPU. This quota is 2 because Knative's validating
+    # webhook DRY-RUN CREATES a sample pod to validate every Revision template,
+    # requesting the same resources as the real pod. With a ceiling of exactly 1
+    # and the real pod already holding it, the dry-run can NEVER pass:
+    #
+    #   dry run failed with pods "dry-run-validation..." is forbidden: exceeded
+    #   quota: tier-quota, requested: requests.nvidia.com/gpu=1,
+    #   used: requests.nvidia.com/gpu=1, limited: requests.nvidia.com/gpu=1
+    #
+    # KServe then retries forever and the InferenceService is pinned at
+    # READY=False *even though the pod is Running*. Unconditional in Knative
+    # v1.23 — no feature flag, no annotation gate. Confirmed by experiment in
+    # DEVIATIONS.md, which also records that the enforced concurrent ceiling is
+    # therefore 2 and flags it for a platform decision.
+    requests.nvidia.com/gpu: "2"
+    # Shared by more pods than an inference project: the chat predictor and its
+    # queue-proxy, Qdrant, the RAG service, the vCluster control plane, and —
+    # briefly — the seed Job, the staging pod and the ingestion Job. The
+    # long-lived limits sum to roughly 5 CPU and 10Gi, so this is headroom for
+    # the transient ones rather than slack.
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    # See the arithmetic in the header block above.
+    requests.storage: 10Gi
+    persistentvolumeclaims: "6"
+    # Enough for a blue/green rollout of the chat model, not enough to sprawl.
+    # RAG uses exactly one InferenceService — the embedding model is NOT a
+    # second one, which is the whole reason this number did not have to change.
+    count/inferenceservices.serving.kserve.io: "2"
+---
+# ===========================================================================
+# THE DEFAULTS THAT MAKE THE CEILING SURVIVABLE — MANDATORY, NOT TIDY
+# ===========================================================================
+# Once the quota above sets limits.cpu and limits.memory, Kubernetes REQUIRES
+# every container in this namespace to state both. A pod that omits them cannot
+# be accounted for and is rejected outright:
+#
+#   Error from server (Forbidden): pods "x" is forbidden: failed quota:
+#   tier-quota: must specify limits.cpu for: <container>
+#
+# So the rule is: quota on limits.* -> you MUST also ship a LimitRange.
+#
+# Without this, everything the PI did not write is rejected: the vCluster
+# control-plane pod, Knative's queue-proxy sidecar, KServe's storage-initializer,
+# and the seed Job in this same pack.
+#
+# THE RAG WORKLOADS DELIBERATELY DO NOT RELY ON IT. Qdrant, the ingestion Job
+# and the RAG service all state their own cpu/memory, because the default
+# ceiling below (512Mi) would OOM-kill an ONNX session the moment it loaded the
+# embedding model — a failure that surfaces as an unexplained Exit 137 rather
+# than as anything about limits. Only the throwaway staging pod takes the
+# defaults, and it runs `sleep`.
+#
+# NOTE this applies ONLY to cpu and memory. Extended resources such as
+# nvidia.com/gpu are never defaulted, so a pod gets a GPU only by asking for one
+# explicitly (CLAUDE.md §2.3).
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: defaults
+  namespace: p-ksl-docs
+  labels:
+    hive.ksl/project: ksl-docs
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 500m
+        memory: 512Mi
+---
+# ===========================================================================
+# STORAGE — THREE CLAIMS, THREE DIFFERENT JOBS
+# ===========================================================================
+# models       written once by the seed Job; mounted READ-ONLY by everything
+#              else. Holds the chat GGUF under llm/ and the embedding model's
+#              ONNX cache under embed/.
+# scratch      the PI's corpus. Written by the staging pod, read by the
+#              ingestion Job, and never touched again.
+# qdrant-data  the vector index. The only claim a long-lived pod writes to.
+#
+# storageClassName `standard` is kind's local-path provisioner (production:
+# WekaFS CSI with directory quotas — DEVIATIONS.md). Two consequences that bite
+# here harder than they do for an inference project, because more pods share
+# these claims:
+#
+#   * volumeBindingMode is WaitForFirstConsumer, so a claim stays **Pending
+#     until a pod mounts it**. A Pending PVC here is NOT a fault and the
+#     provisioning UI must not report it as one.
+#   * The volume is a directory on ONE node's disk, so ReadWriteOnce is the only
+#     honest access mode. Every pod that mounts `models` — the seed Job, the
+#     ingestion Job, the RAG service, and KServe's predictor — must land on the
+#     SAME NODE. That happens by itself: local-path gives the PV a node affinity
+#     and the scheduler honours it for every later pod. Worth knowing anyway,
+#     because on a multi-node production cluster with a real RWX filesystem this
+#     constraint disappears, and any future change that assumes co-location
+#     would be assuming a local-path artefact.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models
+  namespace: p-ksl-docs
+  labels:
+    hive.ksl/project: ksl-docs
+    hive.ksl/role: models
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scratch
+  namespace: p-ksl-docs
+  labels:
+    hive.ksl/project: ksl-docs
+    hive.ksl/role: scratch
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi
+---
+# THE THIRD CLAIM, and the one an inference project does not have. Separate from
+# `scratch` on purpose: the corpus is disposable input that has already been
+# read by the time anyone asks a question, while this is the live index the RAG
+# service queries on every request. Sharing one claim would put a pod that must
+# stay up and a pod that must finish on the same ReadWriteOnce volume.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: qdrant-data
+  namespace: p-ksl-docs
+  labels:
+    hive.ksl/project: ksl-docs
+    hive.ksl/role: vector-index
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 2Gi

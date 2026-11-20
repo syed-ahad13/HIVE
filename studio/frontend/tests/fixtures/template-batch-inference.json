@@ -1,0 +1,309 @@
+{
+    "apiVersion": "studio.hive.ksl/v1",
+    "kind": "UseCaseTemplate",
+    "metadata": {
+        "id": "batch-inference",
+        "displayName": "Batch Inference Run",
+        "category": "Run",
+        "maturity": "available",
+        "description": "Run a model over your dataset and download the results. No endpoint is created."
+    },
+    "spec": {
+        "parameters": [
+            {
+                "name": "projectName",
+                "type": "string",
+                "label": "Project name",
+                "help": "Lowercase letters, numbers and hyphens. This becomes the name of your run and the folder your results are kept in, and it cannot be changed afterwards.",
+                "required": true,
+                "group": "basics",
+                "pattern": "^[a-z0-9-]{3,20}$",
+                "immutable": false,
+                "reservedNames": [
+                    "inf-101",
+                    "inf-103",
+                    "default"
+                ],
+                "reservedPrefixes": [
+                    "kube-",
+                    "hive-"
+                ]
+            },
+            {
+                "name": "model",
+                "type": "enum",
+                "label": "Model",
+                "help": "Chosen from the models the platform team has reviewed and mirrored.",
+                "required": true,
+                "group": "resources",
+                "source": "models.yaml",
+                "sourceFilter": {
+                    "served": "True"
+                },
+                "immutable": false,
+                "values": [
+                    {
+                        "value": "qwen2.5-0.5b-instruct-q4",
+                        "label": "Qwen 2.5 0.5B Instruct (chat)",
+                        "description": null
+                    },
+                    {
+                        "value": "sklearn-iris",
+                        "label": "Iris classifier (demo, classic ML)",
+                        "description": null
+                    }
+                ]
+            },
+            {
+                "name": "datasetUploadId",
+                "type": "upload",
+                "label": "Your dataset",
+                "help": "A CSV or JSONL file. It is copied into your project for the run and deleted with it. If you leave this empty we use a small sample so you can see how it works.",
+                "required": false,
+                "group": "basics",
+                "pattern": "^[a-z0-9-]{0,40}$",
+                "immutable": false,
+                "accept": [
+                    ".csv",
+                    ".jsonl"
+                ],
+                "maxFiles": 1,
+                "maxBytes": 209715200
+            },
+            {
+                "name": "inputFormat",
+                "type": "enum",
+                "label": "File format",
+                "help": "How your file is laid out. The upload preview detects this for you.",
+                "required": true,
+                "group": "resources",
+                "values": [
+                    {
+                        "value": "csv",
+                        "label": "CSV \u2014 a header row, then one record per line"
+                    },
+                    {
+                        "value": "jsonl",
+                        "label": "JSONL \u2014 one JSON object per line"
+                    }
+                ],
+                "default": "csv",
+                "immutable": false
+            },
+            {
+                "name": "inputFields",
+                "type": "multiselect",
+                "label": "Which columns the model reads",
+                "help": "Chosen from the columns we found in your file. For a classic model these are the features, in order. For a chat model they become the text the prompt asks about.",
+                "required": true,
+                "group": "resources",
+                "pattern": "^[A-Za-z0-9_.\\- ]{1,64}$",
+                "immutable": false
+            },
+            {
+                "name": "promptTemplate",
+                "type": "string",
+                "label": "What to ask about each row",
+                "help": "Written once and used for every row. {input} is replaced by the columns you chose above; you can also name any other column directly, like {title}. Only used by chat models.",
+                "required": false,
+                "group": "resources",
+                "default": "Classify the topic and the sentiment of the following text. Answer as JSON with keys \"topic\" and \"sentiment\".\n\nText: {input}",
+                "immutable": false
+            },
+            {
+                "name": "maxRows",
+                "type": "integer",
+                "label": "How many rows to process",
+                "help": "Cap the run while you are testing.",
+                "required": true,
+                "group": "resources",
+                "minimum": 0,
+                "maximum": 1000000,
+                "default": 200,
+                "immutable": false
+            },
+            {
+                "name": "batchSize",
+                "type": "integer",
+                "label": "Rows per request",
+                "help": "How many rows are sent together. Larger is faster, up to a point. Only used by classic models.",
+                "required": true,
+                "group": "resources",
+                "minimum": 1,
+                "maximum": 256,
+                "default": 64,
+                "immutable": false
+            },
+            {
+                "name": "concurrency",
+                "type": "integer",
+                "label": "Rows in flight at once",
+                "help": "How many rows are being worked on simultaneously. Only used by chat models.",
+                "required": true,
+                "group": "resources",
+                "minimum": 1,
+                "maximum": 8,
+                "default": 2,
+                "immutable": false
+            },
+            {
+                "name": "maxFailureRatePct",
+                "type": "integer",
+                "label": "Stop if this percentage of rows fail",
+                "help": "A run that is mostly failing is usually pointed at the wrong column. Stopping early leaves you the errors to look at.",
+                "required": true,
+                "group": "resources",
+                "minimum": 0,
+                "maximum": 100,
+                "default": 10,
+                "immutable": false
+            },
+            {
+                "name": "tier",
+                "type": "enum",
+                "label": "Size",
+                "help": "How much of the shared hardware your run may use at once. Both sizes are one GPU on this local rehearsal cluster.",
+                "required": true,
+                "group": "resources",
+                "values": [
+                    {
+                        "value": "small",
+                        "label": "Small",
+                        "description": "One GPU. Enough for the sample datasets and for most classifier runs."
+                    },
+                    {
+                        "value": "medium",
+                        "label": "Medium",
+                        "description": "One GPU locally, larger on the real cluster. Choose this for long chat runs over many thousands of rows."
+                    }
+                ],
+                "default": "small",
+                "immutable": false
+            },
+            {
+                "name": "runTimeoutMinutes",
+                "type": "integer",
+                "label": "Give up after",
+                "help": "Minutes. Your run is stopped if it takes longer than this, so a misconfigured job cannot hold hardware all night.",
+                "required": true,
+                "group": "basics",
+                "minimum": 5,
+                "maximum": 720,
+                "default": 60,
+                "immutable": false
+            },
+            {
+                "name": "artifactRetentionDays",
+                "type": "integer",
+                "label": "Keep the results for",
+                "help": "Days. Your results stay downloadable for this long after the run finishes, then the project and everything in it is removed.",
+                "required": true,
+                "group": "basics",
+                "minimum": 1,
+                "maximum": 30,
+                "default": 14,
+                "immutable": false
+            }
+        ],
+        "resources": [
+            "namespace-pack",
+            "model-seed-job",
+            "vcluster",
+            "dataset-upload",
+            "batch-run",
+            "collect-results"
+        ],
+        "outputs": [
+            "rowsProcessed",
+            "rowsFailed",
+            "durationSeconds",
+            "rowsPerSecond",
+            "artifacts",
+            "resultsAvailableUntil"
+        ],
+        "lifecycle": {
+            "kind": "run",
+            "runTimeoutMinutes": "runTimeoutMinutes",
+            "artifactRetentionDays": "artifactRetentionDays",
+            "teardownOrder": [
+                "batch-run",
+                "vcluster",
+                "namespace-pack"
+            ]
+        },
+        "quotaProfile": "batch"
+    },
+    "steps": [
+        "approve",
+        "namespace-pack",
+        "model-seed",
+        "vcluster",
+        "dataset-upload",
+        "batch-run",
+        "collect-results"
+    ],
+    "sampleDatasets": {
+        "chat": {
+            "file": "abstracts-200.csv",
+            "bytes": 54976,
+            "preview": {
+                "format": "csv",
+                "columns": [
+                    "id",
+                    "text"
+                ],
+                "rowsEstimated": 200,
+                "rowsExact": true,
+                "sampleRows": [
+                    {
+                        "id": "abs-0001",
+                        "text": "This study examines an investigation of coral reef thermal stress. Controls were included at every stage of processing. Repeated bleaching events were recorded across the survey transects, with recovery lagging in the shallower plots. Further work should extend the observation period."
+                    },
+                    {
+                        "id": "abs-0002",
+                        "text": "This study examines an investigation of seagrass carbon storage. The sample comprised observations from twelve sites. Sediment cores from the meadow edge showed markedly lower organic carbon than the interior. Additional sampling would reduce the remaining uncertainty."
+                    },
+                    {
+                        "id": "abs-0003",
+                        "text": "We report an investigation of monsoon variability. Replicates were analysed independently by two teams. Interannual rainfall anomalies correlated with sea surface temperature in the preceding season. These results have implications for how such systems are monitored."
+                    }
+                ]
+            }
+        },
+        "predict-v1": {
+            "file": "iris-5000.csv",
+            "bytes": 85051,
+            "preview": {
+                "format": "csv",
+                "columns": [
+                    "sepal_length",
+                    "sepal_width",
+                    "petal_length",
+                    "petal_width"
+                ],
+                "rowsEstimated": 4999,
+                "rowsExact": false,
+                "sampleRows": [
+                    {
+                        "sepal_length": "4.9",
+                        "sepal_width": "3.5",
+                        "petal_length": "1.4",
+                        "petal_width": "0.1"
+                    },
+                    {
+                        "sepal_length": "5.5",
+                        "sepal_width": "3.0",
+                        "petal_length": "4.6",
+                        "petal_width": "1.4"
+                    },
+                    {
+                        "sepal_length": "6.4",
+                        "sepal_width": "2.7",
+                        "petal_length": "5.1",
+                        "petal_width": "1.6"
+                    }
+                ]
+            }
+        }
+    }
+}

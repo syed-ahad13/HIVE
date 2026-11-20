@@ -1,0 +1,104 @@
+# ===========================================================================
+# STUDIO FRAGMENT — CORPUS STAGING POD (the `corpus-upload` resource)
+# Rendered by studio/backend into tenants/$project/rendered/corpus-staging-pod.yaml
+# ===========================================================================
+# A THROWAWAY POD WHOSE ONLY PURPOSE IS TO BE COPIED INTO. It mounts the
+# project's `scratch` PVC, sleeps, and is deleted by the same pipeline step that
+# created it. It runs no code of ours and outlives the step by nothing.
+#
+# ---------------------------------------------------------------------------
+# WHY A POD AT ALL — THERE IS NO OTHER WAY IN
+# ---------------------------------------------------------------------------
+# A PersistentVolumeClaim is not writable from outside the cluster. `kubectl cp`
+# copies into a CONTAINER, not into a volume, so getting a PI's documents onto
+# `scratch` means having a running container with `scratch` mounted for as long
+# as the copy takes. That is this pod, and its lifetime is the copy.
+#
+# The alternatives were considered and are worse:
+#
+#   * an initContainer on the ingestion Job — the files would have to already be
+#     inside the cluster for it to copy them, which is the problem;
+#   * a ConfigMap — 1MiB total, and a corpus is not configuration;
+#   * baking the corpus into an image — a rebuild per upload;
+#   * an HTTP upload endpoint in-cluster — a second service, exposed, with its
+#     own authentication story, to move files once.
+#
+# ---------------------------------------------------------------------------
+# `kubectl cp` NEEDS `tar` IN THE TARGET CONTAINER
+# ---------------------------------------------------------------------------
+# This is the trap in this file. `kubectl cp` is implemented as
+# `tar cf - <src> | kubectl exec -i -- tar xf - -C <dst>`; a container without
+# `tar` on its PATH fails with "tar: not found" and an exit status that reads
+# like a permissions problem.
+#
+# busybox has a `tar` applet — VERIFIED by running
+# `docker run --rm busybox:1.37 tar --help`, not assumed — and
+# `docker manifest inspect busybox:1.37` lists linux/arm64, so it runs natively
+# on Apple Silicon. That is the entire reason this image is busybox and not
+# `scratch` or a distroless base, both of which would be smaller and neither of
+# which can be copied into.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT
+# ---------------------------------------------------------------------------
+# Two passes: `#@if` / `#@end` blocks first (none here), then string.Template
+# substitution. A LITERAL dollar sign must be written `$`.
+#
+# Placeholders:
+#   $project      project name
+#   $stage_image  pinned busybox reference, from app/render.py
+# ===========================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: my-rag-stage
+  namespace: p-my-rag
+  labels:
+    hive.ksl/project: my-rag
+    hive.ksl/role: corpus-staging
+    hive.ksl/template: studio-rag
+  annotations:
+    hive.ksl/ephemeral: "true"
+    hive.ksl/purpose: >-
+      Deleted by the corpus-upload step that created it. If this pod still
+      exists, that step did not finish.
+spec:
+  # A bare Pod, not a Job. A Job would want a completion criterion, and this pod
+  # has none: it is finished when something outside it has finished copying.
+  # `restartPolicy: Never` means a crashed staging pod stays visibly dead
+  # instead of restarting into a copy that is no longer coming.
+  restartPolicy: Never
+  # The pod is deleted explicitly by the pipeline. This is the BACKSTOP: if the
+  # BFF is killed mid-copy, the pod terminates on its own rather than holding a
+  # ReadWriteOnce claim against the tenant's quota until somebody notices. Ten
+  # minutes is far longer than any copy this template permits and short enough
+  # that a leak is self-healing within one demo.
+  terminationGracePeriodSeconds: 5
+  activeDeadlineSeconds: 600
+  containers:
+    - name: stage
+      image: busybox:1.37
+      # `sleep 600` and NOT `sleep infinity`: the same ten minutes as the
+      # deadline above, so the two agree. A container that exits while `kubectl
+      # cp` is still writing produces a partially copied corpus and a confusing
+      # error, which is why this is generous rather than tight.
+      command: ["sh", "-c", "mkdir -p /mnt/scratch/corpus && sleep 600"]
+      volumeMounts:
+        # READ-WRITE. This and the ingestion Job are the only pods that mount
+        # `scratch`, and only this one writes to it.
+        - name: scratch
+          mountPath: /mnt/scratch
+      # Tiny, and it means it: this container runs `sleep`. The namespace's
+      # LimitRange would default it to 500m/512Mi, which would be an order of
+      # magnitude of the tenant's ceiling reserved for a process doing nothing.
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+  volumes:
+    - name: scratch
+      persistentVolumeClaim:
+        claimName: scratch

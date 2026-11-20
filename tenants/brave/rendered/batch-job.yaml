@@ -1,0 +1,271 @@
+# ===========================================================================
+# STUDIO FRAGMENT — THE BATCH JOB (the whole point of this template)
+# Rendered by studio/backend into tenants/$project/rendered/batch-job.yaml
+# ===========================================================================
+# ONE Job, ONE pod, TWO containers:
+#
+#   runtime  the CURATED SERVING RUNTIME, as a NATIVE SIDECAR — an entry in
+#            initContainers carrying `restartPolicy: Always`. It holds the GPU.
+#   driver   our batch driver, the pod's main container. It streams the dataset
+#            through the runtime over localhost and writes the results.
+#
+# ---------------------------------------------------------------------------
+# WHY THE SIDECAR MUST BE NATIVE
+# ---------------------------------------------------------------------------
+# A serving runtime never exits — that is what serving means. Put it in
+# `containers:` and the pod never completes, so the Job never completes, and a
+# run that finished its work in ninety seconds sits "running" until the deadline
+# kills it.
+#
+# A NATIVE SIDECAR is terminated by the kubelet once the main container exits.
+# That is precisely the lifecycle a run needs, and it is why `restartPolicy:
+# Always` on an initContainer is load-bearing rather than decorative.
+#
+# VERIFIED ON THIS CLUSTER (v1.37.0) BEFORE BEING RELIED ON, per the task's
+# verify-don't-guess rule — not read from release notes:
+#
+#   * the Job reached `Complete 1/1` when the driver exited;
+#   * the sidecar's `nvidia.com/gpu` request WAS counted against the namespace
+#     ResourceQuota, observed 0 -> 1 -> 0 across the run;
+#   * `kubectl logs <pod> -c driver` works while the pod is running;
+#   * there is a ~5-10s lag between the driver exiting and the Job reporting
+#     Complete — the poller in executor_real must not read that window as a
+#     failure.
+#
+# No fallback was needed, so there is no emptyDir sentinel and no DEVIATIONS row
+# for one.
+#
+# ---------------------------------------------------------------------------
+# THE RUNTIME IS NOT WRITTEN HERE — IT IS READ FROM THE CLUSTER
+# ---------------------------------------------------------------------------
+# $runtime_image, $runtime_command_json and $runtime_args_json are rendered
+# from the ClusterServingRuntime the chosen model resolves to, read with
+# `kubectl get clusterservingruntime -o json` by the executor and passed into
+# the renderer. NOTHING about the serving image is hardcoded in this repository
+# for batch.
+#
+# That is the argument the whole template exists to make: a batch run goes
+# through the SAME curated supply chain as a served endpoint. Re-pin the gguf
+# runtime's digest and both move together; neither can drift toward an image
+# nobody reviewed.
+#
+# THREE THINGS THE CSR MADE HARDER THAN THE TASK SKETCH ASSUMED, all found by
+# reading the live objects rather than assuming their shape:
+#
+#   1. `command` IS SET on hive-llama-cpp-rag and ABSENT on kserve-sklearnserver.
+#      Rendering only `args` would drop llama.cpp's entire startup script. Both
+#      are rendered, as JSON arrays, and an absent one renders as `null` which
+#      Kubernetes correctly treats as "use the image's ENTRYPOINT".
+#   2. `ports` IS ABSENT on BOTH runtimes. There is nothing to read, so the port
+#      is a constant 8080 here and in the driver's RUNTIME_URL — which is what
+#      both runtimes' own args actually bind to.
+#   3. `{{.Name}}` APPEARS IN THE ARGS OF BOTH. KServe renders it from the
+#      InferenceService name. A batch run has no InferenceService, so the
+#      RENDERER substitutes it (app/render.py) before it ever reaches this file.
+#      Left unrendered it would reach llama.cpp as a literal `--alias {{.Name}}`.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT
+# ---------------------------------------------------------------------------
+# Two passes: `#@if` / `#@end` first, then string.Template substitution. A
+# LITERAL dollar sign must be written `$`.
+#
+#   Facts:  none — this fragment has no conditional blocks.
+#
+#   Placeholders:
+#     $project                project name
+#     $runtime_name           the ClusterServingRuntime this came from (a label,
+#                             so a running pod can be traced to its runtime)
+#     $runtime_image          .spec.containers[0].image, verbatim
+#     $runtime_command_json   .spec.containers[0].command as a JSON array, or null
+#     $runtime_args_json      .spec.containers[0].args as a JSON array, or null
+#     $runtime_cpu/$runtime_memory        the runtime's own limits, from the CSR
+#     $driver_image           hive-local/batch-driver:<tag>
+#     $model_serving_name     what the sidecar calls the model — the project
+#                             name, from the same substitution that filled
+#                             `{{.Name}}` in the runtime's own args
+#     $active_deadline        runTimeoutMinutes * 60
+#     ... and the driver's env, one placeholder each (see below)
+#
+# JSON arrays rather than YAML lists because a JSON array IS valid YAML flow
+# style, and it means the renderer emits one line with no indentation to get
+# wrong — an args list rendered at the wrong indent is a manifest that applies
+# and then behaves oddly.
+# ===========================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: brave-batch
+  namespace: p-brave
+  labels:
+    hive.ksl/project: brave
+    hive.ksl/role: batch-run
+    hive.ksl/template: studio-batch
+    # Which curated runtime this run used, on the object itself. Answers "what
+    # actually served this?" from `kubectl get job -o yaml` without joining back
+    # to the registry.
+    hive.ksl/runtime: kserve-sklearnserver
+spec:
+  # ZERO RETRIES, DELIBERATELY. A batch run is not idempotent: a retry would
+  # re-process rows already written to results.jsonl and double the file. If a
+  # run fails the PI should see why and decide, which is what Retry in the UI is
+  # for — a decision, not an automatic reflex.
+  backoffLimit: 0
+  # THE RUN'S CEILING, ENFORCED BY KUBERNETES RATHER THAN BY STUDIO. A run that
+  # overruns is killed here, at the workload, whether or not the BFF is even
+  # running. Studio watching a clock would be a ceiling that evaporates when the
+  # console is closed.
+  activeDeadlineSeconds: 3600
+  # Keep the finished pod around so `collect-results` can still read the driver's
+  # logs and the UI can show the tail. Without it the pod can be garbage
+  # collected out from under the step that needs it.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        hive.ksl/project: brave
+        hive.ksl/role: batch-run
+    spec:
+      restartPolicy: Never
+      # =====================================================================
+      # THE NATIVE SIDECAR
+      # =====================================================================
+      # In `initContainers` with `restartPolicy: Always`. Started before the
+      # driver, kept running alongside it, and terminated by the kubelet when
+      # the driver exits. See the header for what was verified.
+      initContainers:
+        - name: runtime
+          # THE LINE THAT MAKES IT A SIDECAR RATHER THAN AN INIT STEP. Without
+          # it the pod would wait for this container to exit before starting the
+          # driver — and a serving runtime never exits, so the pod would hang in
+          # Init for ever.
+          restartPolicy: Always
+          image: kserve/sklearnserver:v0.20.0
+          command: null
+          args: ["--model_name=brave", "--model_dir=/mnt/models", "--http_port=8080"]
+          ports:
+            - name: http
+              containerPort: 8080
+          volumeMounts:
+            # EXACTLY /mnt/models, because the curated runtime's own args say so
+            # — kserve-sklearnserver passes `--model_dir=/mnt/models` and
+            # hive-llama-cpp-rag globs `/mnt/models/*.gguf`. Mounting anywhere
+            # else would mean rewriting args we deliberately do not own.
+            # READ-ONLY: the runtime serves the model, it does not manage it.
+            - name: models
+              mountPath: /mnt/models
+              readOnly: true
+          resources:
+            requests:
+              cpu: 1
+              memory: 2Gi
+            limits:
+              # THE ONE GPU REQUEST SURFACE (CLAUDE.md §2.3), byte-identical to
+              # what a served endpoint asks for, so this manifest migrates
+              # unchanged. Locally satisfied by the fake extended resource
+              # patched onto node capacity; no device plugin is involved.
+              #
+              # Held for exactly as long as the work takes, then released — the
+              # 0 -> 1 -> 0 the proof records.
+              nvidia.com/gpu: "1"
+              cpu: 1
+              memory: 2Gi
+      # =====================================================================
+      # THE DRIVER — the pod's main container, and the one whose exit ends the run
+      # =====================================================================
+      containers:
+        - name: driver
+          image: hive-local/batch-driver:0.2.0
+          # Built locally and loaded into the kind nodes with `kind load
+          # docker-image`; it exists in no registry. Without this the kubelet
+          # tries to pull `hive-local/batch-driver:...` from Docker Hub and the
+          # pod sits in ImagePullBackOff — which looks like a network problem and
+          # is not one.
+          imagePullPolicy: Never
+          command: ["python", "/app/driver.py"]
+          env:
+            # --- where the data is -------------------------------------
+            - name: INPUT_PATH
+              value: "/mnt/scratch/input/iris_batch.csv"
+            - name: INPUT_FORMAT
+              value: "csv"
+            # COMMA-SEPARATED, IN ORDER. An env var is a string, and the
+            # order is load-bearing for a classic model's feature vector.
+            - name: INPUT_FIELDS
+              value: "petal_width,petal_length,sepal_width,sepal_length"
+            - name: OUTPUT_DIR
+              value: "/mnt/scratch/output"
+            # --- how to call the runtime -------------------------------
+            # localhost, because the sidecar is in THIS pod. No Service, no
+            # gateway, no Host header: the two containers share a network
+            # namespace, which is the other reason they are one pod.
+            - name: RUNTIME_URL
+              value: "http://127.0.0.1:8080"
+            - name: MODEL_INTERFACE
+              value: "predict-v1"
+            - name: MODEL_ID
+              value: "sklearn-iris"
+            - name: MODEL_INVOKE_PATH
+              value: "/v1/models/{name}:predict"
+            # THE NAME THE SIDECAR SERVES UNDER, which is NOT the catalogue's
+            # model id. KServe renders `{{.Name}}` in a runtime's args from the
+            # InferenceService's name; there is no InferenceService here, so
+            # Studio renders it with the project name — and KServe V1 then
+            # expects that same name in the request path. Both come from one
+            # substitution (render.runtime_container), so they cannot disagree.
+            - name: MODEL_SERVING_NAME
+              value: "brave"
+            # --- how to do the work ------------------------------------
+            - name: PROMPT_TEMPLATE
+              # NO SURROUNDING QUOTES, unlike every other value here — the
+              # renderer already JSON-encodes this one, so it arrives WITH its
+              # quotes. Adding another pair produces `value: ""x {input}""`,
+              # which is a YAML parse error rather than a silently wrong value.
+              #
+              # It is JSON-encoded because a prompt is multi-line free text that
+              # must survive a YAML scalar, a container env var and os.environ
+              # before the driver sees it; the driver json.loads it back.
+              value: "Classify the topic and the sentiment of the following text. Answer as JSON with keys \"topic\" and \"sentiment\".\n\nText: {input}"
+            - name: MAX_ROWS
+              value: "200"
+            - name: BATCH_SIZE
+              value: "64"
+            - name: CONCURRENCY
+              value: "2"
+            - name: MAX_FAILURE_RATE_PCT
+              value: "10"
+            - name: PROGRESS_EVERY
+              value: "25"
+            # Unbuffered, so `kubectl logs -f` shows BATCH_PROGRESS lines as they
+            # happen rather than in a lump when the process exits. The driver
+            # also flushes explicitly; this is the belt to that's braces, and it
+            # costs nothing.
+            - name: PYTHONUNBUFFERED
+              value: "1"
+          volumeMounts:
+            # READ-ONLY. The driver never touches the model; it talks to the
+            # runtime that does.
+            - name: models
+              mountPath: /mnt/models
+              readOnly: true
+            # READ-WRITE: the dataset is read from input/ and the results are
+            # written to output/, both on this claim.
+            - name: scratch
+              mountPath: /mnt/scratch
+          # Modest. The driver holds one row at a time for chat and one batch for
+          # predict-v1; the memory-hungry half of this pod is the runtime.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models
+            readOnly: true
+        - name: scratch
+          persistentVolumeClaim:
+            claimName: scratch

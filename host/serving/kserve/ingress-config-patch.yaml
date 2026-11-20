@@ -1,0 +1,67 @@
+# Makes KServe publish InferenceService URLs that Kourier actually serves.
+#
+# ---------------------------------------------------------------------------
+# THE BUG THIS FIXES
+# ---------------------------------------------------------------------------
+# KServe ships `ingress.disableIstioVirtualHost: false`, i.e. it assumes Istio.
+# In that mode, KServe derives the InferenceService URL by taking the predictor's
+# Knative URL and DELETING the "-predictor" segment
+# (getHostBasedServiceUrl in pkg/controller/v1beta1/inferenceservice/reconcilers/
+# ingress/ingress_reconciler.go):
+#
+#     predictor route (real, served by Kourier):
+#         sklearn-iris-predictor.default.hive.local
+#     isvc .status.url (synthesised, needs an Istio VirtualService):
+#         sklearn-iris.default.hive.local
+#
+# With Istio, a VirtualService would map that shortened host onto the predictor.
+# HIVE-LOCAL runs Kourier and has no Istio, and KServe deliberately skips
+# VirtualService reconciliation when the CRD is absent ("This allows KServe to
+# operate with non-Istio network layers (e.g., Kourier) without failing").
+#
+# The result is the nastiest kind of failure: the InferenceService reports
+# READY=True and advertises a URL, and that URL 404s at the gateway in ~8ms
+# without ever waking a pod. Nothing is marked unhealthy.
+#
+# Setting disableIstioVirtualHost: true makes KServe return the predictor URL
+# UNCHANGED, so .status.url names a host Kourier has a real Route for.
+#
+# ---------------------------------------------------------------------------
+# WHY THE OTHER FIELDS ARE LEFT ALONE
+# ---------------------------------------------------------------------------
+# A merge patch replaces the whole `ingress` value, so every key must be restated.
+# Only disableIstioVirtualHost is changed from the shipped defaults:
+#   * ingressGateway / localGateway / localGatewayService / kserveIngressGateway
+#     name Istio gateways and are unused once VirtualService creation is skipped.
+#   * ingressClassName "istio" applies to Kubernetes Ingress objects in Standard
+#     (RawDeployment) mode, which invariant §2.2 forbids — so it is never read.
+#   * ingressDomain "example.com" is only consulted for PATH-based URLs
+#     (domainTemplate/pathTemplate); with host-based routing the domain comes from
+#     Knative's config-domain, which step 3 set to hive.local.
+# They are left at defaults deliberately: fewer edits to re-justify at migration,
+# when Istio-based ingress may well come back.
+#
+# Applied with:
+#   kubectl patch configmap inferenceservice-config -n kserve \
+#     --type merge --patch-file host/serving/kserve/ingress-config-patch.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inferenceservice-config
+  namespace: kserve
+data:
+  ingress: |-
+    {
+        "enableGatewayApi": false,
+        "kserveIngressGateway": "kserve/kserve-ingress-gateway",
+        "ingressGateway" : "knative-serving/knative-ingress-gateway",
+        "localGateway" : "knative-serving/knative-local-gateway",
+        "localGatewayService" : "knative-local-gateway.istio-system.svc.cluster.local",
+        "ingressDomain"  : "example.com",
+        "ingressClassName" : "istio",
+        "domainTemplate": "{{ .Name }}-{{ .Namespace }}.{{ .IngressDomain }}",
+        "urlScheme": "http",
+        "disableIstioVirtualHost": true,
+        "disableIngressCreation": false,
+        "disableHTTPRouteTimeout": false
+    }

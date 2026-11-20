@@ -1,0 +1,127 @@
+# The tenant ceiling for Inf-101 — Medium tier.
+#
+# CLAUDE.md §2.4: ceilings are enforced by a ResourceQuota in the tenant's HOST
+# namespace, at ADMISSION TIME. That phrase is the important part. This is not a
+# controller that notices an overspend later and reconciles it away — the API server
+# refuses to create the offending pod at all. Nothing over-quota ever runs, not even
+# briefly, and the tenant gets an immediate, explicit error instead of a workload
+# that disappears mysteriously.
+#
+# It lives on the HOST side precisely so the tenant cannot raise it. Inside their
+# vCluster a PI is cluster-admin; here they have no access.
+#
+# ---------------------------------------------------------------------------
+# GPU IS THE BINDING CONSTRAINT. CPU AND MEMORY ARE DELIBERATELY ROOMY.
+# ---------------------------------------------------------------------------
+# The GPU number IS the tier — it is what rations the scarce resource and the one
+# thing a tenant must not exceed. NOTE the quota value is 2, not 1: one GPU for the
+# tier plus one of unavoidable headroom for Knative's dry-run validation. The full
+# reasoning is on the `requests.nvidia.com/gpu` key below — read it before changing
+# this number. It is the number that actually
+# rations the scarce resource, and the one thing a tenant must not be able to exceed.
+#
+# cpu/memory are set generously ON PURPOSE, and not because they do not matter — but
+# because this namespace hosts more than the tenant's model:
+#
+#   * the vCluster CONTROL-PLANE pod (its own API server + etcd) will run here and
+#     count against this quota,
+#   * Knative injects a queue-proxy sidecar into every serving pod,
+#   * KServe injects a storage-initializer init container,
+#   * one-off Jobs like the model seeder below.
+#
+# Sizing cpu/memory tightly would starve the tenant's own control plane and produce
+# admission failures that look like tenant bugs but are really platform overhead.
+# In production these numbers are sized against real node capacity; locally they are
+# headroom, and the GPU ceiling carries the actual tier semantics.
+#
+# ---------------------------------------------------------------------------
+# WHY `requests.nvidia.com/gpu` AND NOT `limits.nvidia.com/gpu`
+# ---------------------------------------------------------------------------
+# For EXTENDED resources, Kubernetes only accepts quota keys with the `requests.`
+# prefix — `limits.nvidia.com/gpu` is not a valid quota key. This is not a
+# contradiction of §2.3, which fixes how a TENANT ASKS (always
+# `resources.limits["nvidia.com/gpu"]`). Because extended resources may never be
+# overcommitted, Kubernetes derives an equal `requests` from that `limits` value, and
+# it is the derived request this quota counts. Tenant-facing syntax and quota-facing
+# accounting simply use different halves of the same, always-equal pair.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tier-quota
+  namespace: p-inf-101
+spec:
+  hard:
+    # --- the tier's binding constraint -------------------------------------
+    #
+    # !! 2, NOT 1, AND THE REASON MATTERS !!
+    #
+    # The Medium tier is ONE GPU. This quota is 2 because Knative's validating
+    # webhook DRY-RUN CREATES a sample pod to validate every Revision template, and
+    # that sample pod requests the same resources as the real one:
+    #
+    #   admission webhook "validation.webhook.serving.knative.dev" denied the request:
+    #   validation callback failed: dry run failed with pods "dry-run-validation..."
+    #   is forbidden: exceeded quota: tier-quota,
+    #   requested: requests.nvidia.com/gpu=1, used: requests.nvidia.com/gpu=1,
+    #   limited: requests.nvidia.com/gpu=1
+    #
+    # With a ceiling of exactly 1 and the real pod already holding it, the dry-run can
+    # NEVER pass. KServe then retries forever and the InferenceService is pinned at
+    # READY=False *even though the pod is Running and the Knative Service, Route and
+    # Revision are all Ready*. The service works; only its status cannot converge.
+    #
+    # The dry-run is UNCONDITIONAL in Knative v1.23 — pkg/webhook/podspec_dryrun.go
+    # has no feature flag and no annotation gate, so it cannot be turned off.
+    #
+    # It bites T-AO hardest: an always-on service never releases its GPU, so it is
+    # permanently stuck. T-SZ self-heals once it scales to zero, which is worse in a
+    # way — an intermittent failure that looks like a flake.
+    #
+    # THEREFORE: quota = tier + 1 GPU of validation headroom.
+    #
+    # HONEST CONSEQUENCE, and it needs a decision at platform level: the *enforced*
+    # concurrent ceiling is now 2, not 1. A determined tenant could run two 1-GPU pods.
+    # The tier is documented as 1 and every template requests 1, but the quota alone no
+    # longer proves it. See DEVIATIONS.md. Options if that is unacceptable: cap
+    # count/inferenceservices at 1 AND pin max-scale, or enforce the tier in an
+    # admission policy that can distinguish a dry-run from a real pod.
+    requests.nvidia.com/gpu: "2"
+
+    # --- roomy on purpose; see the header ----------------------------------
+    limits.cpu: "8"
+    limits.memory: 16Gi
+
+    # --- storage ------------------------------------------------------------
+    # Total capacity across all PVCs in the namespace, and a count ceiling so a
+    # tenant cannot exhaust the provisioner with many tiny claims.
+    #
+    # SIZED FOR CONTROL-PLANE OVERHEAD, not just the tenant's own data. The same
+    # argument as cpu/memory above, and it was learned the hard way: the vCluster
+    # StatefulSet provisions its own etcd data volume in THIS namespace, and it
+    # defaults to 5Gi. With an earlier 5Gi ceiling and 2Gi already taken by the
+    # tenant's models + scratch claims, the control plane could not start at all:
+    #
+    #   Create Pod inf-101-0 in StatefulSet inf-101 failed: failed to create PVC
+    #   data-inf-101-0: persistentvolumeclaims "data-inf-101-0" is forbidden:
+    #   exceeded quota: tier-quota, requested: requests.storage=5Gi,
+    #   used: requests.storage=2Gi, limited: requests.storage=5Gi
+    #
+    # Note the failure shape: the StatefulSet retries forever and no pod is ever
+    # created, so `kubectl get pods` is simply EMPTY rather than showing anything
+    # Pending. The explanation lives only in the StatefulSet's events.
+    #
+    # Current budget: models 1Gi + scratch 1Gi + vCluster etcd 5Gi = 7Gi, leaving
+    # 5Gi of headroom. Storage is deliberately not a binding constraint locally —
+    # GPU is the number that carries the tier (production: WekaFS directory quotas
+    # size this against real capacity).
+    requests.storage: 12Gi
+    # 3 claims are already accounted for (models, scratch, and the vCluster's
+    # data-<name>-0). 6 leaves room for a tenant to add their own without the
+    # platform's own volume crowding them out.
+    persistentvolumeclaims: "6"
+
+    # --- object count -------------------------------------------------------
+    # `count/<resource>.<group>` caps how many of a CUSTOM resource may exist.
+    # Two InferenceServices per tenant: enough for a blue/green rollout, not
+    # enough to sprawl.
+    count/inferenceservices.serving.kserve.io: "2"

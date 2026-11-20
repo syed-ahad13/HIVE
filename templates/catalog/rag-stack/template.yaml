@@ -1,0 +1,485 @@
+# ===========================================================================
+# HIVE STUDIO USE-CASE TEMPLATE — RAG STACK
+# ===========================================================================
+# The second template that really provisions. A PI answers seven questions,
+# hands over a folder of documents, and gets an endpoint that answers questions
+# about them and cites which passage each answer came from.
+#
+# ---------------------------------------------------------------------------
+# WHAT CHANGED SINCE THIS FILE SAID "COMING SOON"
+# ---------------------------------------------------------------------------
+# The previous version of this file listed three things that blocked it. All
+# three were real, and all three were answered by a decision rather than by
+# code, so the answers are recorded here where the decision is visible:
+#
+#   1. "NO VECTOR DATABASE IS INSTALLED, and none is a KServe concern. It needs
+#      a decision about where it lives."
+#      ANSWERED: it lives in the tenant's HOST namespace, p-<project>, beside
+#      the vCluster control plane — platform-managed, and inside the tenant's
+#      ResourceQuota so it is accounted for like everything else. Not inside the
+#      vCluster, and the reason is concrete rather than philosophical: a pod
+#      authored inside a vCluster CANNOT mount the existing host `models` and
+#      `scratch` PVCs. The syncer maps a virtual PVC to a NEW host PVC, so an
+#      in-vCluster ingestion Job would index an empty volume. The KServe
+#      predictor pods are already host-native for exactly the same reason, so
+#      this is the tenancy model the platform already has, not a new one.
+#      The cost, stated plainly: the PI cannot `kubectl edit` their own Qdrant.
+#      They can query it through their RAG service and see it on their project
+#      page, and that is the whole of their access.
+#
+#   2. "NO EMBEDDING-MODEL PATH EXISTS. An embedding model is a second served
+#      model per project, which doubles GPU pressure against a 1-GPU tier and
+#      collides with count/inferenceservices: 2."
+#      ANSWERED: it is not a served model. Embeddings are computed IN-PROCESS
+#      with fastembed (ONNX, CPU, 67MB) inside the ingestion Job and the RAG
+#      service. Zero extra InferenceServices, zero extra GPUs, no network hop on
+#      the query path. See the `embed` section of templates/catalog/models.yaml.
+#
+#   3. "CORPUS INGESTION IS AN UNSOLVED DATA-MOVEMENT PROBLEM."
+#      PARTLY ANSWERED, and the honest limits are in `corpusUploadId` below.
+#      What exists: a documented upload path, a deterministic chunker, an
+#      idempotent index, and deletion with the namespace. What does not: any
+#      re-indexing when documents change, and any access control on the corpus
+#      beyond the tenant boundary itself.
+#
+# ---------------------------------------------------------------------------
+# THE SHAPE, IN ONE PARAGRAPH
+# ---------------------------------------------------------------------------
+# Everything except the chat model runs in the HOST namespace: Qdrant (a
+# single-replica Deployment with its own PVC), the ingestion Job, and the RAG
+# service. The chat model is an InferenceService AUTHORED INSIDE THE PI's OWN
+# vCLUSTER and reconciled by the ONE central KServe, exactly as
+# inference-endpoint does it and exactly as tenants/inf-101 does it by hand —
+# CLAUDE.md §2.1 and §2.2 are unchanged by this template. The RAG service
+# reaches that model by hairpinning through Knative's cluster-local gateway with
+# a Host header, the same way any in-cluster caller would.
+# ===========================================================================
+
+apiVersion: studio.hive.ksl/v1
+kind: UseCaseTemplate
+
+metadata:
+  id: rag-stack
+  displayName: "Ask questions about your own documents"
+  # Serve = "run a model and give me a URL". Retrieve = "answer from MY
+  # documents, and show me which ones". The distinction a PI is making at the
+  # catalogue is about what the endpoint knows, not about what runs.
+  category: Retrieve
+  maturity: available
+  description: >-
+    Upload a folder of documents and get an endpoint that answers questions
+    about them, quoting the passages it used. Your documents stay inside your
+    own project and are deleted with it. You get your own kubeconfig, so you can
+    inspect everything the platform runs for you.
+
+spec:
+  # -------------------------------------------------------------------------
+  # PARAMETERS — the entire deploy wizard, in order.
+  # -------------------------------------------------------------------------
+  parameters:
+    # Identical rules to inference-endpoint, and deliberately the same text: a
+    # PI who has deployed one template should not have to re-read the rule. It
+    # becomes the host namespace (p-<projectName>), the vCluster name, the
+    # InferenceService name, the Qdrant and RAG Deployment names, the collection
+    # name, and the directory under tenants/.
+    - name: projectName
+      type: string
+      # Which wizard screen this question appears on. Declared here rather than
+      # decided in the console: the frontend renders whatever the template asks
+      # for, in the order it asks, so a new question is a change to this file
+      # and nothing else. See Parameter.group in studio/backend/app/schema.py.
+      group: basics
+      label: "Project name"
+      help: >-
+        Lowercase letters, numbers and hyphens. This becomes the name of your
+        cluster and your endpoint, and it cannot be changed afterwards.
+      required: true
+      # 20 characters still keeps the derived Knative route host inside the
+      # 63-character DNS label limit once "-predictor" and the namespace and the
+      # domain are appended. RAG adds "$project-qdrant" and "$project-rag", both
+      # of which are ordinary Service names and comfortably shorter.
+      pattern: "^[a-z0-9-]{3,20}$"
+      # Enforced by the backend, NOT by this pattern (CLAUDE.md invariant (c)).
+      # A client-side check is a hint; validation.py is the control, and it
+      # UNIONS these with its own constants so a template can add names and can
+      # never remove them.
+      reservedNames:
+        - inf-101
+        - inf-103
+        - default
+      reservedPrefixes:
+        - kube-
+        - hive-
+
+    # THE MODEL THAT WRITES THE ANSWER. Filtered to interface: chat, because a
+    # predict-v1 model cannot read passages and write prose — offering
+    # sklearn-iris here would be offering a choice that cannot work.
+    #
+    # The filter is data, in this file, rather than a rule in the resolver: the
+    # catalogue decides what a template may offer (CLAUDE.md §6, "the catalogue
+    # is DATA, not code"). The loader refuses to start if it matches nothing.
+    - name: baseModel
+      type: enum
+      group: resources
+      label: "Model that answers the questions"
+      help: >-
+        Reads the passages found in your documents and writes the answer. Chosen
+        from the models the platform team has reviewed.
+      required: true
+      source: models.yaml
+      sourceFilter:
+        interface: chat
+
+    # HOW YOUR DOCUMENTS ARE INDEXED, and the sharpest constraint in the file:
+    # the SAME embedding must be used at index time and at query time, or the
+    # question's vector and the documents' vectors are not in the same space and
+    # the search returns noise that looks like results. Changing it therefore
+    # means rebuilding the index, which means redeploying the project — so the
+    # help text says so rather than letting a PI discover it.
+    #
+    # It is still a dropdown rather than immutable because a second embedding
+    # model is a realistic near-term addition, and because the choice is
+    # genuinely the PI's: a multilingual corpus wants a different model.
+    - name: embeddingModel
+      type: enum
+      group: resources
+      label: "How your documents are indexed"
+      help: >-
+        Turns your documents into something searchable. This runs inside your
+        project on CPU — it does not use a GPU and does not need its own
+        endpoint. It cannot be changed later without rebuilding the index.
+      required: true
+      source: models.yaml
+      sourceFilter:
+        interface: embed
+      default: bge-small-en-v1.5
+
+    # ONE VECTOR DATABASE THE PLATFORM CAN ACTUALLY OPERATE, back up and
+    # upgrade, rather than four it half-supports.
+    #
+    # AN IMMUTABLE ENUM, NOT A `fixed` STRING, and the difference is about the
+    # future rather than about today. `fixed` says "this is not a question".
+    # `immutable` says "this is a question with one acceptable answer right
+    # now" — so when a second vector database is supported, this becomes a live
+    # dropdown by deleting the `immutable` line, with no change to its type, to
+    # the validator, or to anything that reads it.
+    #
+    # The UI renders it read-only; validation.py refuses anything but the
+    # default, server-side, because a disabled input is a hint and not a control.
+    - name: vectorDb
+      type: enum
+      group: resources
+      label: "Search index"
+      help: "Qdrant, run for you inside your project. Nothing to configure."
+      required: true
+      immutable: true
+      values:
+        # The whole of what a PI reads for this field, because the wizard renders
+        # an immutable enum as a statement rather than a dropdown. The
+        # parenthetical follows the CLAUDE.md pattern ("your private cluster
+        # (vCluster)"): the real name stays discoverable without being the price
+        # of entry, and "inside your project" answers the only question a PI
+        # actually has about it — where does it live, and does it go when I go.
+        - value: qdrant
+          label: "Qdrant (provisioned inside your project)"
+      default: qdrant
+
+    # THE DOCUMENTS THEMSELVES — a handle, not the files.
+    #
+    # The wizard uploads first (POST /api/uploads), gets an id back, and submits
+    # the id. That indirection is not ceremony: a deploy request is JSON that is
+    # retried, logged, stored in the registry as the record of intent, and shown
+    # back to the PI on the review screen. A corpus embedded in it would be
+    # megabytes of base64 in all four places.
+    #
+    # NOT `type: file`. A `file` parameter would mean the wizard submits bytes
+    # and the backend holds them in memory; the upload endpoint streams them to
+    # disk under tenants/_uploads/<id>/ and the pipeline copies from there. The
+    # validator still refuses `file` parameters outright, which is correct — this
+    # is a string, and the string is checked.
+    #
+    # NOT required. Left empty, the pipeline indexes
+    # templates/catalog/rag-stack/demo-corpus/ and says so in the step log, so
+    # the template can be demonstrated end to end without anyone having to find
+    # documents first.
+    #
+    # HONEST LIMITS, since this is the parameter the old version of this file
+    # called an unsolved problem: the corpus is copied ONCE, at provisioning.
+    # Changing your documents means redeploying. There is no re-index trigger,
+    # no incremental update, and no access control on the corpus beyond the
+    # tenant boundary — anyone who can reach the project's endpoint can retrieve
+    # any passage in it.
+    # TYPE `upload`, NOT `string`, AND NOT `file`.
+    #
+    # The stored value is a short id, so `string` would describe the DATA
+    # correctly and the QUESTION wrongly — the wizard would render a text box and
+    # ask a PI to type an identifier they have no way of knowing. `file` would
+    # mean the form carries the bytes, which nothing supports and which
+    # validation.py refuses outright.
+    #
+    # `upload` says: the console stages the documents first (POST /api/uploads),
+    # gets an id back, and submits that. The deploy request stays JSON that can
+    # be logged, stored as intent and shown back on the review screen, while the
+    # PI only ever sees a drop zone and a list of their own filenames.
+    #
+    # It sits on the BASICS screen because it is part of what the project IS,
+    # like its name — not part of how much hardware it gets.
+    - name: corpusUploadId
+      type: upload
+      group: basics
+      label: "Your documents"
+      help: >-
+        Markdown or plain-text files. They are copied into your project once, at
+        setup, and deleted when the project is. If you leave this empty we index
+        a small sample so you can see how it works.
+      required: false
+      # An upload id, as minted by the upload endpoint. Constrained so a
+      # submitted value cannot be a path: the pipeline joins it onto
+      # tenants/_uploads/, and "../../etc" must never survive the join. The
+      # server re-checks this rather than trusting the pattern (validation.py).
+      pattern: "^[a-z0-9-]{0,40}$"
+      # WHAT THIS QUESTION TAKES — previously hard-coded in the drop-zone
+      # component, which meant this template silently set the rules for every
+      # other one. Prose, several files, and a small ceiling because 5MB of
+      # writing is a lot of writing.
+      accept: [".md", ".txt"]
+      maxFiles: 20
+      maxBytes: 5242880
+
+    # HOW MANY PASSAGES GO INTO THE PROMPT. The single most useful knob a PI has
+    # over answer quality, and the one with a real cost: every extra passage is
+    # ~600 more characters of context, a slower answer, and more room for an
+    # irrelevant passage to distract the model.
+    #
+    # Capped at 8 because the runtime this template pins has a 4096-token
+    # context (host/serving/runtimes/llama-cpp-rag.yaml). 8 x 600 characters is
+    # roughly 1,200 tokens of passages, which leaves the system message, the
+    # question and the answer comfortable room. Raising this cap without raising
+    # the runtime's context would truncate the prompt SILENTLY, from the front,
+    # which is where the passages are.
+    - name: topK
+      type: integer
+      group: resources
+      label: "How many passages to use"
+      # First sentence states the mechanism plainly; the second is the guidance
+      # that stops a PI from assuming more is better. The bounds are rendered
+      # separately by the number field from `minimum`/`maximum`, so they are not
+      # repeated here.
+      help: >-
+        How many passages are retrieved per question. More is slower and not
+        always better.
+      required: true
+      minimum: 1
+      maximum: 8
+      default: 3
+
+    # Archetype selection, in user-side language. Identical mechanism to
+    # inference-endpoint, but the sentence is different because the consequence
+    # is different: here the sleeping thing is the CHAT MODEL behind a RAG
+    # service that is always awake. Qdrant and the RAG service are ordinary
+    # Deployments and do not scale to zero, so a sleeping project still answers
+    # /healthz instantly and still takes ~15s to answer the first QUESTION.
+    - name: availability
+      type: enum
+      group: resources
+      label: "Availability"
+      help: >-
+        Always on answers immediately but holds a GPU the whole time. On demand
+        frees the GPU when nobody is asking — your search index stays up, but
+        the first question after a quiet spell waits about 15 seconds for the
+        model to wake.
+      required: true
+      values:
+        - value: always-on
+          label: "Always on"
+          description: >-
+            Answers immediately, day or night. Holds a GPU the whole time,
+            whether or not anyone is asking questions.
+        - value: on-demand
+          label: "On demand"
+          # Deliberately different wording from inference-endpoint's: in a RAG
+          # project only the MODEL sleeps. The search index and the endpoint stay
+          # up, so what waits is the first question, not the first request.
+          description: >-
+            Frees the GPU when nobody is asking. Your search index stays up, but
+            the first question after a quiet spell waits about 15 seconds for the
+            model to wake.
+      default: always-on
+
+    # The ceiling, enforced by the ResourceQuota in the HOST namespace at
+    # admission time (CLAUDE.md §2.4). Both tiers are 1 GPU locally; the
+    # quotaProfile below is what makes a RAG project's quota differ from an
+    # inference project's, and it differs by storage and PVC count, not by GPU.
+    - name: tier
+      type: enum
+      group: resources
+      label: "Size"
+      help: >-
+        How much of the shared hardware your project may use at once. Both sizes
+        are one GPU on this local rehearsal cluster.
+      required: true
+      values:
+        - value: small
+          label: "Small — 1 GPU"
+        - value: medium
+          label: "Medium — 1 GPU locally (larger in production)"
+      default: small
+
+    # Feeds lifecycle.ttl, which becomes hive.ksl/expiry on the namespace. The
+    # clock starts at provisioning and SLEEP NEVER PAUSES IT (CLAUDE.md §2.6) —
+    # an on-demand RAG project whose model sleeps for a month still ages a
+    # month. Your documents go when the project goes.
+    - name: durationDays
+      type: integer
+      group: basics
+      label: "How long do you need it?"
+      help: >-
+        Your project — including your uploaded documents and the search index
+        built from them — is removed automatically when this runs out. Ask for an
+        extension if you need longer.
+      required: true
+      minimum: 10
+      maximum: 90
+      default: 30
+
+  # -------------------------------------------------------------------------
+  # HOW THE ENDPOINT IS TALKED TO
+  # -------------------------------------------------------------------------
+  # `rag`, declared by the TEMPLATE, overriding the chat model's own `interface`.
+  #
+  # This is not a cosmetic override. The endpoint a PI calls is NOT the model:
+  # it is the retrieval service in front of it, which takes `{"question": "..."}`
+  # and returns an answer together with the passages it used. The chat model
+  # underneath is still `interface: chat` in models.yaml and still speaks
+  # /v1/chat/completions — but nothing outside the project talks to it directly.
+  #
+  # The playground reads this to decide what to render. Honouring the model's
+  # interface instead would give a PI a chat box wired to a service that does not
+  # accept chat messages.
+  interface: rag
+
+  # -------------------------------------------------------------------------
+  # RESOURCES — what gets provisioned, in this order.
+  # -------------------------------------------------------------------------
+  # The pipeline builds its step plan from this list (app/pipeline.py), so the
+  # order here IS the order things are created. Two entries are worth reading
+  # twice:
+  #
+  #   `vcluster` has no fragment. A vCluster is not created by applying a
+  #   manifest — the pipeline shells out to `vcluster create ... -f
+  #   templates/t-ao-values.yaml` (or t-sz), reusing the two archetype values
+  #   files step 6 proved. That is the one imperative call in the pipeline
+  #   (CLAUDE.md §6).
+  #
+  #   Three entries are named for what the PI gets and render from a fragment
+  #   named for what is in it — `vector-db` -> qdrant.yaml.tmpl, `corpus-upload`
+  #   -> corpus-staging-pod.yaml.tmpl, `ingestion` -> ingestion-job.yaml.tmpl.
+  #   The mapping is in app/catalog.py (RESOURCE_TO_FRAGMENT), written out so an
+  #   unrecognised resource is a startup error rather than a skipped step.
+  #
+  # WHY THIS ORDER AND NOT ANOTHER:
+  #   namespace-pack     first, always. Its LimitRange is what makes every later
+  #                      pod admissible at all.
+  #   model-seed         both models, before anything needs them.
+  #   vcluster           before the InferenceService, which is authored inside it.
+  #   vector-db          before ingestion, which writes into it.
+  #   corpus-upload      before ingestion, which reads what it staged.
+  #   ingestion          before rag-api, so the service comes up against a
+  #                      populated index and its first health check is honest.
+  #   inference-service  the chat model. Its `ready-check` gate produces the URL
+  #                      the RAG service needs, which is why rag-api comes after.
+  #   rag-api            last, because it depends on all four of the above.
+  resources:
+    - namespace-pack
+    - model-seed
+    - vcluster
+    - vector-db
+    - corpus-upload
+    - ingestion
+    - inference-service
+    - rag-api
+
+  # -------------------------------------------------------------------------
+  # OUTPUTS — what the PI is handed when it finishes.
+  # -------------------------------------------------------------------------
+  #   ragEndpointUrl   the thing to actually call: the RAG service's in-cluster
+  #                    address. The playground reaches it through the BFF, never
+  #                    from the browser (CLAUDE.md §6).
+  #   chatEndpointUrl  the raw chat model underneath, read LIVE from the
+  #                    InferenceService's .status.url and never constructed —
+  #                    local URLs carry a "-predictor" segment production will
+  #                    not have (DEVIATIONS.md). Surfaced because a PI debugging
+  #                    a bad answer needs to know whether the retrieval or the
+  #                    model was at fault, and that means being able to ask the
+  #                    model the same question without the passages.
+  #   collectionName   the Qdrant collection, so the live point count on the
+  #                    project page can be read back from the cluster rather
+  #                    than cached (invariant (b)).
+  #   indexedChunks    how many passages were indexed. Reported by the ingestion
+  #                    Job itself, as history — "what did this run produce?" —
+  #                    while the CURRENT count is always read live from Qdrant.
+  #   kubeconfig       admin credentials for the PI's OWN vCluster.
+  outputs:
+    - ragEndpointUrl
+    - chatEndpointUrl
+    - collectionName
+    - indexedChunks
+    - kubeconfig
+
+  # -------------------------------------------------------------------------
+  # THE CEILING THIS TEMPLATE WRITES
+  # -------------------------------------------------------------------------
+  # Named, not computed. The numbers live literally in
+  # resources/namespace-pack.yaml.tmpl so the whole set of ceilings the platform
+  # hands out is readable in a file and visible in a diff.
+  #
+  # `rag-small` is the plain tier quota with two numbers changed, and both
+  # changes exist because a RAG project has a THIRD PVC an inference project
+  # does not:
+  #
+  #   requests.storage           10Gi   models 1 + scratch 1 + qdrant-data 2
+  #                                     + the vCluster's own 5Gi etcd claim = 9Gi
+  #   persistentvolumeclaims     6      those four, leaving two for the PI
+  #
+  # Everything else — GPU, cpu, memory, count/inferenceservices — is identical
+  # to the tier, because RAG adds no GPU workload and no second InferenceService.
+  quotaProfile: rag-small
+
+  # -------------------------------------------------------------------------
+  # LIFECYCLE
+  # -------------------------------------------------------------------------
+  lifecycle:
+    ttl:
+      # durationDays added to provisioning time, written as hive.ksl/expiry on
+      # the namespace by namespace-pack. Studio SETS the clock; the host
+      # reconciler CronJob is what honours it (CLAUDE.md §2.6).
+      fromParameter: durationDays
+
+    # Reverse dependency order, and every position is load-bearing:
+    #
+    #   rag-api first          it is the only thing with open connections to the
+    #                          other two. Removing it first means no request is
+    #                          in flight against a Qdrant that is going away.
+    #   ingestion second       the Job may still be running on a retried or
+    #                          failed deployment; it writes to Qdrant, so it must
+    #                          stop before Qdrant does.
+    #   vector-db third        Qdrant and its Service. Its PVC goes with the
+    #                          namespace, at the end.
+    #   inference-service      the workload releases its GPU while the control
+    #                          plane that owns it is still up.
+    #   vcluster               deleting its host namespace first would strand the
+    #                          StatefulSet and its etcd PVC.
+    #   namespace-pack last    takes the quota, the LimitRange and all three
+    #                          PVCs — and therefore the PI's documents — with it.
+    #
+    # `corpus-upload` is deliberately ABSENT. Its staging pod is deleted by the
+    # step that created it, in the same step, so by the time teardown runs there
+    # is nothing of it left to remove. Listing it would mean a teardown step
+    # that always finds nothing, which reads like a bug.
+    teardownOrder:
+      - rag-api
+      - ingestion
+      - vector-db
+      - inference-service
+      - vcluster
+      - namespace-pack

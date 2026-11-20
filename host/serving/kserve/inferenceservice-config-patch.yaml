@@ -1,0 +1,39 @@
+# Pins the ONE central KServe installation to Serverless (Knative) mode.
+#
+# CLAUDE.md invariant §2.2: every tenant's InferenceService runs through Knative.
+# No RawDeployment / Standard mode, ever.
+#
+# WHY THIS MUST BE SET EXPLICITLY, even though the shipped manifest already says
+# "Serverless": in KServe v0.20 the compiled-in fallback is
+#
+#     DefaultDeployment DeploymentModeType = Standard
+#
+# (pkg/constants/constants.go). If this key were ever emptied or dropped, KServe
+# would silently fall back to Standard — a violation of the invariant that would
+# not announce itself. Asserting it on every install run is the guard.
+#
+# ON THE VALUE "Serverless":
+# KServe v0.20 renamed the deployment modes and treats the old names as
+# deprecated aliases, normalised by ParseDeploymentMode():
+#
+#     "Serverless"    -> Knative    (deprecated alias, still accepted)
+#     "RawDeployment" -> Standard   (deprecated alias, still accepted)
+#
+# So "Serverless" and "Knative" are behaviourally identical in v0.20. We keep
+# "Serverless" because it is what the v0.20 release manifest itself ships and what
+# HIVE's contract language uses. When KServe eventually drops the alias, this one
+# file is the only place that changes.
+#
+# Applied with:
+#   kubectl patch configmap inferenceservice-config -n kserve \
+#     --type merge --patch-file host/serving/kserve/inferenceservice-config-patch.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: inferenceservice-config
+  namespace: kserve
+data:
+  deploy: |-
+    {
+      "defaultDeploymentMode": "Serverless"
+    }

@@ -1,0 +1,128 @@
+# ===========================================================================
+# STUDIO FRAGMENT — INFERENCE SERVICE (RAG STACK)
+# Rendered by studio/backend into tenants/$project/rendered/inference-service.yaml
+# ===========================================================================
+# The chat model that writes the answers. THE ONLY PART OF A RAG PROJECT THAT IS
+# AUTHORED INSIDE THE PI's OWN vCLUSTER — everything else (Qdrant, the ingestion
+# Job, the RAG service) is host-native because it has to mount host PVCs.
+#
+# So the architecture claim CLAUDE.md §2.1 and §2.2 make is intact and is worth
+# restating, because a template with this much host-side machinery could easily
+# have quietly abandoned it: THE TENANT AUTHORS THIS OBJECT IN THEIR OWN CONTROL
+# PLANE, and the ONE central KServe on the host reconciles it. Locally the
+# mirroring is done by the executor itself (DEVIATIONS.md — scripts/sync-isvc.sh
+# cannot serve a Studio project), which names the host copy
+# `$project-x-default-x-$project`.
+#
+# This file is inference-endpoint's fragment with TWO differences:
+#
+#   1. THE RUNTIME IS PINNED BY THE TEMPLATE, not taken from the model entry.
+#   2. There is no `#@if runtime=set` block, because of (1) — the runtime is
+#      never empty here, so the conditional would have exactly one branch.
+#
+# ---------------------------------------------------------------------------
+# (1) WHY THE TEMPLATE PINS THE RUNTIME AND THE CATALOGUE DOES NOT
+# ---------------------------------------------------------------------------
+# Everywhere else in Studio, `runtime` is the model's property: models.yaml says
+# which ClusterServingRuntime an entry needs, and the fragment renders it. Here
+# the TEMPLATE overrides it with `hive-llama-cpp-rag`, and the reason is that
+# the requirement belongs to the use case rather than to the model.
+#
+# RAG works by putting retrieved passages into the prompt. With topK up to 8 and
+# a 600-character chunk ceiling that is a few thousand characters of context on
+# top of the system message, the question and the answer. A runtime with a
+# smaller context does not refuse — it TRUNCATES, silently, from the front,
+# which is exactly where the retrieved passages are. The model then answers from
+# a fragment of its evidence, and sounds precisely as confident as it would have
+# with all of it. There is no error, no condition, and no log line.
+#
+# The same chat model deployed through inference-endpoint has no such
+# requirement and should not pay for it. So the context guarantee is pinned by
+# the template that needs it: host/serving/runtimes/llama-cpp-rag.yaml,
+# `--ctx-size 4096`, and `topK`'s maximum of 8 is derived from that number.
+#
+# app/render.py's `required_runtime()` is the single place this override is
+# expressed, so the `approve` step's precondition check asks about the runtime
+# this deployment WILL ACTUALLY USE rather than the one the model entry names.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT
+# ---------------------------------------------------------------------------
+# Two passes: `#@if <key>=<value>` / `#@end` conditional blocks first, then
+# string.Template substitution. A LITERAL dollar sign must be written `$`.
+#
+# Render facts:
+#   availability = always-on | on-demand
+#
+# Placeholders:
+#   $project             project name; also the InferenceService name and, via
+#                        the runtime's `--alias {{.Name}}`, the `model` field
+#                        echoed back in every OpenAI-compatible response
+#   $min_scale           "1" for always-on, "0" for on-demand
+#   $model_format        the model's `modelFormat` (gguf)
+#   $model_runtime       the pinned RAG runtime — see (1) above
+#   $model_storage_uri   THE COMPLETE URI, e.g. "pvc://models/llm", joined by
+#                        ModelEntry.storage_uri rather than concatenated here
+#                        (an empty subpath must give "pvc://models", not
+#                        "pvc://models/" — see models.yaml)
+# ===========================================================================
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: ksl-docs
+  # `default` is the namespace INSIDE the PI's vCluster. Not the host `default`.
+  namespace: default
+  labels:
+    hive.ksl/project: ksl-docs
+    hive.ksl/template: studio-rag
+    # Which part of the project this is. A RAG project has two endpoints and a
+    # PI debugging a bad answer needs to tell them apart: this one is the raw
+    # model, reachable without any retrieval in front of it.
+    hive.ksl/role: chat-model
+  annotations:
+    # Per-service assertion of the cluster-wide default (CLAUDE.md §2.2), stated
+    # explicitly so the service cannot silently degrade to Standard/RawDeployment
+    # if the cluster default were ever lost — KServe v0.20's compiled-in fallback
+    # is Standard, not Serverless.
+    serving.kserve.io/deploymentMode: "Serverless"
+    # Archetype intent at the tenant-facing layer. NOTE this annotation ALONE
+    # DOES NOT WORK — see spec.predictor.minReplicas below, which is the field
+    # KServe actually honours. Both are written, on purpose.
+    autoscaling.knative.dev/min-scale: "1"
+spec:
+  predictor:
+    # =====================================================================
+    # THIS FIELD IS LOAD-BEARING. THE ANNOTATION ABOVE DOES NOT WORK WITHOUT IT.
+    # =====================================================================
+    # KServe DERIVES the Knative min-scale annotation from THIS field and
+    # overwrites whatever the isvc annotation said. `minReplicas` defaults to 1
+    # when unset, so with only the annotation an on-demand service ends up
+    # pinned at one replica holding a GPU. Observed directly in Gate G3: 347s of
+    # complete idleness at 1 pod, while `window` and `scale-down-delay` HAD
+    # propagated correctly — which is what makes the bug so easy to miss.
+    minReplicas: 1
+    model:
+      modelFormat:
+        name: gguf
+      # PINNED BY THE TEMPLATE, not by the catalogue entry. See (1) in the
+      # header: the >=4096-token context is a requirement of retrieval, not of
+      # the model, and a runtime with less truncates the passages silently.
+      #
+      # This is also why the runtime is declared `autoSelect: false` — with two
+      # runtimes claiming `gguf`, auto-selection would decide on a priority
+      # tie-break which context a RAG project gets.
+      runtime: hive-llama-cpp-rag
+      # The complete URI. Not assembled here — see the header.
+      storageUri: "pvc://models/llm"
+      resources:
+        limits:
+          # THE ONE GPU REQUEST SURFACE (CLAUDE.md §2.3), byte-identical locally
+          # and in production, so this manifest migrates unchanged. Locally
+          # satisfied by the fake extended resource patched onto node capacity;
+          # no device plugin is involved and none may be introduced.
+          #
+          # The EMBEDDING model does not appear anywhere in this file and asks
+          # for no GPU: it runs in-process, on CPU, inside the ingestion Job and
+          # the RAG service. That is what keeps a RAG project inside a 1-GPU
+          # tier (models.yaml, `embed` section).
+          nvidia.com/gpu: "1"

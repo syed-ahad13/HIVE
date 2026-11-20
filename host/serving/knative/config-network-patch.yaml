@@ -1,0 +1,18 @@
+# Knative Serving networking layer selection.
+#
+# Knative ships config-network with only an `_example` block, so the effective
+# default for ingress-class is "istio.ingress.networking.knative.dev". HIVE-LOCAL
+# runs Kourier, not Istio, so this MUST be set explicitly — leaving it unset means
+# Knative waits for an Istio ingress that will never exist and every Route stays
+# unready.
+#
+# Applied with:
+#   kubectl patch configmap config-network -n knative-serving \
+#     --type merge --patch-file host/serving/knative/config-network-patch.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-network
+  namespace: knative-serving
+data:
+  ingress-class: "kourier.ingress.networking.knative.dev"

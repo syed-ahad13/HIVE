@@ -1,0 +1,139 @@
+# ===========================================================================
+# STUDIO FRAGMENT — INFERENCE SERVICE
+# Rendered by studio/backend into tenants/$project/rendered/inference-service.yaml
+# ===========================================================================
+# The workload itself, and the last resource the pipeline applies. Everything in
+# this file is copied from the two archetype manifests that Gate G3 proved live —
+# tenants/inf-101/legal-translation.yaml (always-on) and
+# tenants/inf-103/species-classifier.yaml (scale-to-zero). It is a parameterisation
+# of working manifests, not a fresh authoring, which is why several fields that look
+# redundant are here: each one was established to be load-bearing by an actual
+# failure, and the failures are recorded at the field.
+#
+# WHERE THIS IS APPLIED, AND WHERE IT RUNS. The PI is the author of this object
+# inside their OWN vCluster — that is the promise the platform makes (CLAUDE.md
+# §2.1). It is then mirrored into host namespace p-$project and reconciled there by
+# the ONE central KServe (§2.2). Locally the mirroring is done by
+# scripts/sync-isvc.sh, a polling stand-in for a vCluster Pro feature (DEVIATIONS.md
+# Fallback B), which names the host copy
+# `$project-x-default-x-$project`. That is a mechanism difference only; the
+# architecture shape — tenant authors, host reconciles — is exactly production's.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT
+# ---------------------------------------------------------------------------
+# Two passes: `#@if <key>=<value>` / `#@end` conditional blocks first, then
+# string.Template substitution. A LITERAL dollar sign must be written `$`; there
+# are none here. Blocks do not nest.
+#
+# Render facts for this fragment:
+#   availability = always-on | on-demand
+#   runtime      = set | unset      (derived: "set" when the model's `runtime` is
+#                                    a non-empty string)
+#
+# Placeholders:
+#   $project             project name; also the InferenceService name and, because
+#                        KServe names the served model after the isvc, the `{name}`
+#                        in the catalogue's invokePath
+#   $min_scale           "1" for always-on, "0" for on-demand
+#   $model_format        the model's `modelFormat`
+#   $model_runtime       the model's `runtime` (only referenced inside the
+#                        `#@if runtime=set` block, so its emptiness is never rendered)
+#   $model_storage_uri   THE COMPLETE URI, e.g. "pvc://models" or "pvc://models/llm"
+#
+# ---------------------------------------------------------------------------
+# WHY $model_storage_uri IS A WHOLE URI AND NOT "pvc://models/$model_subpath"
+# ---------------------------------------------------------------------------
+# `pvc://` is NOT downloaded by a storage-initializer. KServe mounts the claim
+# directly at /mnt/models, and any path after the claim name becomes a **subPath**.
+# From KServe v0.20's storage_initializer_injector.go:
+#
+#     // Pvc will be mount to /mnt/models rather than /mnt/pvc.
+#     // PvcPath will be injected via SubPath, pvcPath must be a root or Dir.
+#
+# The sklearn model in the catalogue has an EMPTY storageSubpath, so concatenating in
+# this template would emit `pvc://models/` — a trailing slash, which is NOT the form
+# proven working in tenants/inf-101 and tenants/inf-103. Those both use exactly
+# `pvc://models`, which leaves the subPath empty and mounts the claim ROOT.
+#
+# The renderer therefore JOINS the claim name and the subpath in Python (the same
+# normpath join the seed Job uses to choose its destination directory, so the two
+# can never disagree) and passes the finished URI here as one value.
+# ===========================================================================
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: demo-cv
+  # `default` is the namespace INSIDE the PI's vCluster, which is where the PI
+  # authors this. It is not the host `default` namespace. The host copy lands in
+  # p-$project under a translated name.
+  namespace: default
+  labels:
+    hive.ksl/project: demo-cv
+    hive.ksl/template: studio-inference
+  annotations:
+    # Per-service assertion of the cluster-wide default (CLAUDE.md §2.2). Stated
+    # explicitly so the service cannot silently degrade to Standard/RawDeployment if
+    # the cluster default were ever lost — KServe v0.20's compiled-in fallback is
+    # Standard, not Serverless.
+    serving.kserve.io/deploymentMode: "Serverless"
+    # Archetype intent at the tenant-facing layer: "1" always-on, "0" on-demand.
+    # NOTE this annotation ALONE DOES NOT WORK — see spec.predictor.minReplicas below,
+    # which is the field KServe actually honours. Both are written, on purpose.
+    autoscaling.knative.dev/min-scale: "0"
+    # ---- on-demand only ----------------------------------------------------
+    # These two make idle behaviour DECLARED rather than inherited from Knative's
+    # cluster defaults, and each does a distinct job:
+    #
+    #   window            the autoscaler's averaging window. It will not conclude
+    #                     "idle" until a full window has passed with no traffic.
+    #   scale-down-delay  after deciding to scale down, wait this long before
+    #                     actually removing the pod. Damps flapping: a service hit
+    #                     every ~90s should not tear down and cold-start repeatedly.
+    #
+    # LOCAL 60s; PRODUCTION 30m (CLAUDE.md §2.7, logged in DEVIATIONS.md). The short
+    # local values exist so scale-to-zero can be observed inside a test run instead
+    # of half an hour later. They are two strings, and they are the only difference.
+    #
+    # Unlike min-scale, KServe has no spec field for these and passes them straight
+    # through to the Knative Service — which is exactly what makes the min-scale
+    # clobbering below so easy to miss: these two propagate correctly while it does not.
+    autoscaling.knative.dev/window: "60s"
+    autoscaling.knative.dev/scale-down-delay: "60s"
+spec:
+  predictor:
+    # =======================================================================
+    # THIS FIELD IS LOAD-BEARING. THE ANNOTATION ABOVE DOES NOT WORK WITHOUT IT.
+    # =======================================================================
+    # KServe DERIVES the Knative min-scale annotation from THIS field and overwrites
+    # whatever the isvc annotation said. `minReplicas` defaults to 1 when unset, so
+    # with only the annotation an on-demand service ends up with:
+    #
+    #     autoscaling.knative.dev/min-scale: 1     <-- clobbered, not 0
+    #
+    # Observed directly in Gate G3: the service sat at 1 pod for 347s of complete
+    # idleness, holding a GPU, while `window` and `scale-down-delay` HAD propagated.
+    # For always-on the two happen to agree — KServe's default for minReplicas is
+    # also 1 — so the annotation alone appears to work there purely by coincidence.
+    #
+    # Both are kept, with different jobs:
+    #   minReplicas  what KServe actually honours — the mechanism
+    #   annotation   declares archetype intent, and stays correct if a future KServe
+    #                stops overriding it
+    minReplicas: 0
+    model:
+      modelFormat:
+        name: sklearn
+      # The complete URI. See the header for why this is not assembled here.
+      storageUri: "pvc://models"
+      resources:
+        limits:
+          # THE ONE GPU REQUEST SURFACE (CLAUDE.md §2.3), byte-identical locally and
+          # in production, so this manifest migrates unchanged. Locally satisfied by
+          # the fake extended resource patched onto node capacity; no device plugin
+          # is involved and none may be introduced.
+          #
+          # Always-on holds this for the project's whole lifetime. On-demand releases
+          # it the moment the last replica goes away — the entire point of the choice
+          # the PI made in the wizard.
+          nvidia.com/gpu: "1"

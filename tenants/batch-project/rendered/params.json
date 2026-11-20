@@ -1,0 +1,48 @@
+{
+  "model": {
+    "dims": null,
+    "displayName": "Iris classifier (demo, classic ML)",
+    "distance": null,
+    "fastembedName": null,
+    "id": "sklearn-iris",
+    "interface": "predict-v1",
+    "invokePath": "/v1/models/{name}:predict",
+    "modelFormat": "sklearn",
+    "provider": null,
+    "runtime": "",
+    "sampleInput": {
+      "instances": [
+        [
+          6.8,
+          2.8,
+          4.8,
+          1.4
+        ]
+      ]
+    },
+    "seedUrl": "https://storage.googleapis.com/kfserving-examples/models/sklearn/1.0/model/model.joblib",
+    "storageSubpath": ""
+  },
+  "params": {
+    "artifactRetentionDays": 14,
+    "batchSize": 64,
+    "concurrency": 2,
+    "datasetUploadId": "fc09e95a7a4f47da",
+    "inputFields": [
+      "sepal_length",
+      "sepal_width",
+      "petal_length",
+      "petal_width"
+    ],
+    "inputFormat": "csv",
+    "maxFailureRatePct": 10,
+    "maxRows": 200,
+    "model": "sklearn-iris",
+    "projectName": "batch-project",
+    "promptTemplate": "Classify the topic and the sentiment of the following text. Answer as JSON with keys \"topic\" and \"sentiment\".\n\nText: {input}",
+    "runTimeoutMinutes": 60,
+    "tier": "small"
+  },
+  "project": "batch-project",
+  "templateId": "batch-inference"
+}

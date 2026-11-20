@@ -1,0 +1,41 @@
+# Verification of CLAUDE.md invariant §2.3 — the GPU request surface.
+#
+# This pod asks for a GPU exactly the way a tenant must, and exactly the way it
+# will be written against the production platform:
+#
+#     resources:
+#       limits:
+#         nvidia.com/gpu: "1"
+#
+# Nothing here is local-only. The same manifest is valid against the NVIDIA GPU
+# Operator + DRA in production — which is the entire point of faking the
+# resource on node capacity rather than inventing a different request surface.
+#
+# Extended resources are integer-only and non-overcommittable: Kubernetes
+# requires request == limit for them, and setting `limits` alone makes the
+# scheduler infer an equal `requests`. That is why a GPU is only ever requested
+# under `limits`.
+#
+# The container itself does nothing with a GPU — it cannot, there is no GPU. It
+# just sleeps. What is being tested is the SCHEDULER'S ARITHMETIC: that the pod
+# is admitted, counted against a worker's allocatable `nvidia.com/gpu`, and
+# placed on a node that has one to give.
+#
+# Applied and cleaned up by tests/test-gpu-scheduling.sh.
+apiVersion: v1
+kind: Pod
+metadata:
+  name: gpu-scheduling-check
+  namespace: default
+  labels:
+    hive.ksl/test: gpu-scheduling
+spec:
+  restartPolicy: Never
+  containers:
+    - name: sleeper
+      # busybox:1.37 publishes linux/arm64 — native on Apple Silicon, no emulation.
+      image: busybox:1.37
+      command: ["sleep", "300"]
+      resources:
+        limits:
+          nvidia.com/gpu: "1"

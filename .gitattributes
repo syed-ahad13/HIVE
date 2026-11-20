@@ -1,0 +1,41 @@
+# ===========================================================================
+# HIVE-LOCAL — .gitattributes
+# ===========================================================================
+# Line endings, and one piece of bookkeeping about vendored upstream manifests.
+# ===========================================================================
+
+# Normalise to LF in the repository. kind runs Linux nodes and every manifest and
+# script here is consumed inside a container, so CRLF would be actively wrong —
+# a shell script with CRLF line endings fails with `bad interpreter: ... ^M`.
+* text=auto eol=lf
+
+# Shell scripts are executed by the kind nodes and by scripts/, never by Windows.
+*.sh text eol=lf
+
+# ---------------------------------------------------------------------------
+# VENDORED UPSTREAM MANIFESTS
+# ---------------------------------------------------------------------------
+# ~263,000 of this repository's ~265,000 YAML lines are upstream release manifests
+# committed verbatim, so the exact bytes installed are reproducible offline
+# (VERSIONS.md records the version each one came from). They are OURS to install
+# but not ours to author, and marking them keeps two things usable:
+#
+#   linguist-vendored  GitHub stops counting them, so the language breakdown
+#                      reflects the code actually written here rather than
+#                      reporting the project as 99% YAML.
+#   linguist-generated collapses them by default in pull-request diffs, so a
+#                      re-vendor of KServe does not bury a three-line change to a
+#                      tenant quota under 138,000 lines of CRD.
+#
+# ONLY the untouched upstream files are listed. The patches, the Installation CR,
+# the namespace and the smoke test are authored here and must stay fully visible
+# in review — they are precisely the files where a mistake is ours to make.
+host/cni/operator-crds.yaml                       linguist-vendored linguist-generated
+host/cni/tigera-operator.yaml                     linguist-vendored linguist-generated
+host/serving/cert-manager/cert-manager.yaml       linguist-vendored linguist-generated
+host/serving/knative/serving-crds.yaml            linguist-vendored linguist-generated
+host/serving/knative/serving-core.yaml            linguist-vendored linguist-generated
+host/serving/knative/kourier.yaml                 linguist-vendored linguist-generated
+host/serving/kserve/kserve-crds.yaml              linguist-vendored linguist-generated
+host/serving/kserve/kserve.yaml                   linguist-vendored linguist-generated
+host/serving/kserve/kserve-cluster-resources.yaml linguist-vendored linguist-generated

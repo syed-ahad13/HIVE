@@ -1,0 +1,84 @@
+# One-time seeding of the `models` PVC for tenant Inf-103.
+#
+# Downloads the sklearn iris model into the tenant's own persistent storage, so a
+# later InferenceService can serve it from `pvc://models/model.joblib` instead of
+# reaching out to the internet on every cold start. That matters for the rehearsal:
+# production models come from WekaFS, not from a public bucket, and pulling from a
+# PVC is the access pattern we actually want to exercise.
+#
+# This Job is also the first thing to be admitted into a namespace that now has a
+# ResourceQuota. It carries NO resource stanza, so it only gets in because
+# 10-limitrange.yaml defaults cpu/memory for it — a live demonstration of why that
+# LimitRange is mandatory rather than tidy.
+#
+# python:3.11-slim publishes linux/arm64, so this runs natively on Apple Silicon.
+# The download uses ONLY the standard library (urllib) — no pip install, so the Job
+# needs no network access beyond the single HTTPS GET and cannot be broken by a
+# package index being unavailable.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-models
+  namespace: p-inf-103
+  labels:
+    hive.ksl/project: inf-103
+    hive.ksl/role: seed
+spec:
+  # Retry a few times: this is a network download and transient failure is normal.
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        hive.ksl/project: inf-103
+        hive.ksl/role: seed
+    spec:
+      # A Job that has done its work should stay done. `Never` means a failed pod is
+      # replaced by a new one (counted against backoffLimit) rather than restarted
+      # in place, which keeps the failure visible in `kubectl get pods`.
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: python:3.11-slim
+          # Mounted READ-WRITE here — this is the only workload that should ever
+          # write to `models`. Serving pods mount it readOnly.
+          volumeMounts:
+            - name: models
+              mountPath: /mnt/models
+          command:
+            - python3
+            - -c
+            - |
+              import os, sys, urllib.request
+
+              URL = ("https://storage.googleapis.com/kfserving-examples"
+                     "/models/sklearn/1.0/model/model.joblib")
+              DST = "/mnt/models/model.joblib"
+
+              # Idempotent: re-running this Job must not corrupt a good artefact.
+              if os.path.exists(DST) and os.path.getsize(DST) > 0:
+                  print(f"already seeded: {DST} ({os.path.getsize(DST)} bytes) — nothing to do")
+                  sys.exit(0)
+
+              print(f"downloading {URL}")
+              # Write to a temporary name and rename into place, so an interrupted
+              # download can never leave a truncated file that looks complete.
+              tmp = DST + ".part"
+              with urllib.request.urlopen(URL, timeout=120) as response:
+                  if response.status != 200:
+                      print(f"ERROR: unexpected HTTP status {response.status}", file=sys.stderr)
+                      sys.exit(1)
+                  with open(tmp, "wb") as out:
+                      out.write(response.read())
+
+              size = os.path.getsize(tmp)
+              if size == 0:
+                  print("ERROR: downloaded 0 bytes", file=sys.stderr)
+                  sys.exit(1)
+
+              os.rename(tmp, DST)
+              print(f"seeded {DST} ({size} bytes)")
+              print("contents of /mnt/models:", os.listdir("/mnt/models"))
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models

@@ -1,0 +1,96 @@
+# T-AO — vCluster template for the ALWAYS-ON archetype (tenant Inf-101).
+#
+# vCluster v0.36.1 (open source). Config schema: chart/values.schema.json @ v0.36.1.
+#
+# ===========================================================================
+# THE ARCHITECTURE THIS TEMPLATE SERVES
+# ===========================================================================
+# CLAUDE.md §2.1 gives every tenant their own Kubernetes control plane; §2.2 allows
+# exactly ONE KServe, on the host. Together those force a specific contract:
+#
+#   The tenant AUTHORS an InferenceService inside their own cluster.
+#   The host RECONCILES it, using the one central KServe.
+#
+# Which needs two flows of custom resources, in opposite directions:
+#
+#   toHost    InferenceService       virtual -> host   (so host KServe acts on it,
+#                                                       and status flows back)
+#   fromHost  ClusterServingRuntime  host -> virtual, READ-ONLY
+#                                                      (so the tenant can discover
+#                                                       available model formats)
+#
+# ===========================================================================
+# !! BOTH FLOWS REQUIRE vCLUSTER PRO. THIS IS A LICENCE GATE, NOT A BUG. !!
+# ===========================================================================
+# Custom-resource syncing in either direction is the 'Generic Sync' feature, which
+# open-source vCluster refuses to start with. Verified empirically on v0.36.1: the
+# control-plane pod enters CrashLoopBackOff and logs, for toHost:
+#
+#   error: start managers: init syncers: create pro syncers: register to host syncer
+#   inferenceservices.serving.kserve.io: you are trying to use a vCluster pro feature
+#   'Generic Sync' (vcp-distro-generic-sync) that is not available in the open source
+#   vcluster or disabled in your license.
+#
+# and the identical error for fromHost with clusterservingruntimes.serving.kserve.io.
+#
+# Note the failure mode: the vCluster is created successfully and Helm reports
+# success. Only the control-plane pod crash-loops, so `vcluster create` looks like it
+# worked. The reason is visible only in the pod log.
+#
+# THEREFORE the intended configuration below is COMMENTED OUT, and HIVE-LOCAL uses a
+# scripted stand-in for both flows:
+#
+#   scripts/sync-catalog.sh   fallback A — copies host ClusterServingRuntimes INTO
+#                                          each vCluster, read-only by convention
+#   scripts/sync-isvc.sh      fallback B — mirrors InferenceServices from each
+#                                          vCluster INTO its host namespace and
+#                                          mirrors status back
+#
+# Both are logged in DEVIATIONS.md. The architecture SHAPE is preserved exactly —
+# tenant authors inside, host reconciles — only the mechanism differs.
+#
+# ===========================================================================
+# AT MIGRATION
+# ===========================================================================
+# The official HIVE platform is expected to run licensed vCluster. When it does:
+#   1. uncomment the `sync:` block below,
+#   2. delete scripts/sync-catalog.sh and scripts/sync-isvc.sh,
+#   3. remove the two fallback rows from DEVIATIONS.md.
+# No tenant-authored manifest changes. That is why the intended config is kept here
+# verbatim rather than deleted — this file IS the migration instruction.
+#
+# ===========================================================================
+# WHY T-AO AND T-SZ ARE SEPARATE FILES DESPITE BEING IDENTICAL HERE
+# ===========================================================================
+# At the vCluster layer both archetypes need the same syncer contract — always-on
+# versus scale-to-zero is a property of the InferenceService, not of the tenant's
+# control plane (§2.7 puts it in Knative annotations). They are two files because
+# they are two distinct tenant templates with independent futures: the moment T-SZ
+# needs something T-AO does not (a different idle window, sleep mode, a different
+# resource profile), it must change without touching Inf-101. One shared file would
+# couple the tenants together.
+#
+# T-AO pairs with: autoscaling.knative.dev/min-scale "1".
+
+# Everything is left at vCluster defaults. `sync: {}` is written explicitly rather
+# than leaving the file comment-only, so it remains valid, non-null YAML that helm
+# will accept via -f.
+sync: {}
+
+# ---------------------------------------------------------------------------
+# INTENDED CONFIGURATION — enable once a vCluster Pro licence is available.
+# Verified against the v0.36.1 schema: for toHost custom resources `enabled` is
+# required and `scope` supports only Namespaced (so it is omitted); for fromHost
+# BOTH `enabled` and `scope` are required, hence `scope: Cluster` for the
+# cluster-scoped ClusterServingRuntime.
+# ---------------------------------------------------------------------------
+# sync:
+#   toHost:
+#     customResources:
+#       inferenceservices.serving.kserve.io:
+#         enabled: true
+#   fromHost:
+#     customResources:
+#       clusterservingruntimes.serving.kserve.io:
+#         enabled: true
+#         scope: Cluster

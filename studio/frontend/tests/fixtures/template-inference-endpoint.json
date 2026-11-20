@@ -1,0 +1,145 @@
+{
+    "apiVersion": "studio.hive.ksl/v1",
+    "kind": "UseCaseTemplate",
+    "metadata": {
+        "id": "inference-endpoint",
+        "displayName": "Serve a model behind an API endpoint",
+        "category": "Serve",
+        "maturity": "available",
+        "description": "Pick a model, choose whether it stays warm or sleeps when idle, and get a private cluster with a working HTTP endpoint. You get your own kubeconfig, so you can inspect and change everything inside your project yourself."
+    },
+    "spec": {
+        "parameters": [
+            {
+                "name": "projectName",
+                "type": "string",
+                "label": "Project name",
+                "help": "Lowercase letters, numbers and hyphens. This becomes the name of your cluster and your endpoint, and it cannot be changed afterwards.",
+                "required": true,
+                "group": "basics",
+                "pattern": "^[a-z0-9-]{3,20}$",
+                "immutable": false,
+                "reservedNames": [
+                    "inf-101",
+                    "inf-103",
+                    "default"
+                ],
+                "reservedPrefixes": [
+                    "kube-",
+                    "hive-"
+                ]
+            },
+            {
+                "name": "model",
+                "type": "enum",
+                "label": "Model",
+                "help": "Choose from the models the platform team has reviewed and mirrored.",
+                "required": true,
+                "group": "resources",
+                "source": "models.yaml",
+                "immutable": false,
+                "values": [
+                    {
+                        "value": "qwen2.5-0.5b-instruct-q4",
+                        "label": "Qwen 2.5 0.5B Instruct (chat)",
+                        "description": null
+                    },
+                    {
+                        "value": "sklearn-iris",
+                        "label": "Iris classifier (demo, classic ML)",
+                        "description": null
+                    },
+                    {
+                        "value": "bge-small-en-v1.5",
+                        "label": "BGE Small EN v1.5 (embeddings)",
+                        "description": null
+                    }
+                ]
+            },
+            {
+                "name": "availability",
+                "type": "enum",
+                "label": "Availability",
+                "help": "Always on answers immediately but holds a GPU the whole time. On demand sleeps when idle and frees the GPU, but the first request after a nap takes about 15 seconds to wake it.",
+                "required": true,
+                "group": "resources",
+                "values": [
+                    {
+                        "value": "always-on",
+                        "label": "Always on",
+                        "description": "Answers immediately, day or night. Holds a GPU the whole time, whether or not anyone is using it."
+                    },
+                    {
+                        "value": "on-demand",
+                        "label": "On demand",
+                        "description": "Sleeps when nobody is using it and frees the GPU for someone else. The first request after a nap takes about 15 seconds to wake it."
+                    }
+                ],
+                "default": "always-on",
+                "immutable": false
+            },
+            {
+                "name": "tier",
+                "type": "enum",
+                "label": "Size",
+                "help": "How much of the shared hardware your project may use at once. Both sizes are one GPU on this local rehearsal cluster.",
+                "required": true,
+                "group": "resources",
+                "values": [
+                    {
+                        "value": "small",
+                        "label": "Small \u2014 1 GPU"
+                    },
+                    {
+                        "value": "medium",
+                        "label": "Medium \u2014 1 GPU locally (larger in production)"
+                    }
+                ],
+                "default": "small",
+                "immutable": false
+            },
+            {
+                "name": "durationDays",
+                "type": "integer",
+                "label": "How long do you need it?",
+                "help": "Your project is removed automatically when this runs out, so nothing is left holding hardware after you have finished with it. Ask for an extension if you need longer.",
+                "required": true,
+                "group": "basics",
+                "minimum": 10,
+                "maximum": 90,
+                "default": 30,
+                "immutable": false
+            }
+        ],
+        "resources": [
+            "namespace-pack",
+            "model-seed-job",
+            "vcluster",
+            "inference-service"
+        ],
+        "outputs": [
+            "endpointUrl",
+            "kubeconfig",
+            "dashboardUrl"
+        ],
+        "lifecycle": {
+            "kind": "service",
+            "ttl": {
+                "fromParameter": "durationDays"
+            },
+            "teardownOrder": [
+                "inference-service",
+                "vcluster",
+                "namespace-pack"
+            ]
+        }
+    },
+    "steps": [
+        "approve",
+        "namespace-pack",
+        "model-seed",
+        "vcluster",
+        "inference-service",
+        "ready-check"
+    ]
+}

@@ -1,0 +1,439 @@
+# ===========================================================================
+# HIVE STUDIO USE-CASE TEMPLATE — BATCH INFERENCE RUN
+# ===========================================================================
+# The third template that really provisions, and the first that does NOT leave
+# anything running. A PI points a curated model at a dataset, the work happens,
+# and they download a file. There is no endpoint, no replicas, nothing to wake.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS SHAPE IS DIFFERENT, AND WHY THAT MATTERS MORE THAN IT LOOKS
+# ---------------------------------------------------------------------------
+# Every template before this one produced a SERVICE: something that stays up,
+# reports ready, holds a replica, and is measured in days. This one produces a
+# RUN: it finishes. `lifecycle.kind: run` is what says so, and it changes real
+# behaviour rather than labelling it —
+#
+#   * the pipeline's terminal success state is `completed`, not `ready`;
+#   * there is no endpoint URL to read live, so the project page shows results
+#     instead of a playground;
+#   * "sleeping" and "waking" are not states this thing can be in, and the UI
+#     must not offer them;
+#   * the clock that matters is not how long the PROJECT lives but how long the
+#     RESULTS stay downloadable.
+#
+# ---------------------------------------------------------------------------
+# THE ONE JOB, TWO CONTAINERS
+# ---------------------------------------------------------------------------
+# A batch run is a single Job pod holding the curated serving runtime as a
+# NATIVE SIDECAR (an initContainer with `restartPolicy: Always`) alongside a
+# driver container that streams the dataset through it over localhost.
+#
+# The sidecar has to be native. A container in `containers:` never exits, so the
+# pod would never complete and the Job would hang for ever. A native sidecar is
+# terminated by the kubelet once the main container exits, which is exactly the
+# lifecycle a run needs. VERIFIED on this cluster (v1.37.0) rather than assumed:
+# the Job reached `Complete 1/1`, and — the part that matters for tenancy — the
+# sidecar's `nvidia.com/gpu` request WAS counted against the namespace
+# ResourceQuota, observed going 0 -> 1 -> 0 across the run.
+#
+# That last fact is the whole argument that a batch run is a first-class tenant
+# workload rather than a side channel: it is subject to the same ceiling, at the
+# same admission point, as a served endpoint.
+#
+# ---------------------------------------------------------------------------
+# THE RUNTIME IS READ FROM THE CLUSTER, NOT WRITTEN HERE
+# ---------------------------------------------------------------------------
+# The sidecar's image and args come from the ClusterServingRuntime the chosen
+# model resolves to, read with `kubectl get clusterservingruntime -o json` at
+# provisioning time. Nothing about the serving image is hardcoded in this
+# template or in the fragments.
+#
+# That is the point of the whole design: a batch run and a served endpoint go
+# through the SAME curated supply chain. If a platform engineer re-pins the
+# gguf runtime's digest, both move together, and neither can drift toward an
+# image nobody reviewed.
+# ===========================================================================
+
+apiVersion: studio.hive.ksl/v1
+kind: UseCaseTemplate
+
+metadata:
+  id: batch-inference
+  displayName: "Batch Inference Run"
+  # Serve = "give me a URL". Retrieve = "answer from my documents".
+  # Run = "do this work and hand me the output." The PI is choosing a SHAPE of
+  # result here, not a kind of model.
+  category: Run
+  maturity: available
+  description: >-
+    Run a model over your dataset and download the results. No endpoint is created.
+
+spec:
+  # -------------------------------------------------------------------------
+  # HOW THE RESULT IS COLLECTED
+  # -------------------------------------------------------------------------
+  # No `interface` is declared, and that is deliberate rather than an omission.
+  # `interface` tells the playground how to TALK to an endpoint, and this
+  # template produces no endpoint to talk to. The project page reads
+  # `lifecycle.kind: run` and shows results instead.
+  #
+  # The chosen MODEL still has an interface, and the driver uses it to decide
+  # how to call the runtime over localhost — one request per row for chat, N
+  # rows per request for predict-v1 — but that is an implementation detail of
+  # the run, not a property of the thing the PI is handed.
+
+  parameters:
+    # Same rules as every other template, and deliberately the same words: a PI
+    # who has deployed before should not have to re-read the rule. It becomes
+    # the host namespace, the vCluster name, the Job name, and the directory
+    # under tenants/.
+    - name: projectName
+      type: string
+      group: basics
+      label: "Project name"
+      help: >-
+        Lowercase letters, numbers and hyphens. This becomes the name of your
+        run and the folder your results are kept in, and it cannot be changed
+        afterwards.
+      required: true
+      pattern: "^[a-z0-9-]{3,20}$"
+      # Enforced by the backend, NOT by this pattern (CLAUDE.md invariant (c)).
+      # validation.py UNIONS these with its own constants, so a template may add
+      # names and can never remove them.
+      reservedNames:
+        - inf-101
+        - inf-103
+        - default
+      reservedPrefixes:
+        - kube-
+        - hive-
+
+    # ANY INTERFACE, unlike the other two templates. rag-stack filters to chat
+    # because a predict-v1 model cannot write prose; batch has no such
+    # restriction — running a classifier over 5,000 rows is the *better*
+    # demonstration of throughput, and running a chat model over 200 abstracts
+    # is the better demonstration of usefulness. The driver branches on the
+    # model's own `interface`, so both work without the PI choosing a mode.
+    - name: model
+      type: enum
+      group: resources
+      label: "Model"
+      help: "Chosen from the models the platform team has reviewed and mirrored."
+      required: true
+      source: models.yaml
+      sourceFilter:
+        # Excludes `embed` entries, which are libraries loaded in-process by the
+        # RAG toolkit and are served by nothing — there is no runtime to run as
+        # a sidecar, so a batch run cannot use one.
+        served: "True"
+
+    # THE DATASET. Same `upload` type the RAG stack introduced: the console
+    # stages the file first and submits the id it got back, so the deploy
+    # request stays JSON that can be logged, stored as intent, and shown on the
+    # review screen rather than carrying hundreds of megabytes of base64.
+    #
+    # Left empty, the run uses one of the bundled sample files, so the template
+    # is demonstrable before a PI has found a dataset.
+    - name: datasetUploadId
+      type: upload
+      group: basics
+      label: "Your dataset"
+      help: >-
+        A CSV or JSONL file. It is copied into your project for the run and
+        deleted with it. If you leave this empty we use a small sample so you
+        can see how it works.
+      required: false
+      # An upload id, as minted by the upload endpoint. Constrained so a
+      # submitted value can never be a path: the pipeline joins it onto
+      # tenants/_uploads/, and "../../etc" must not survive the join. Re-checked
+      # server-side; the pattern is the rule made visible, not the control.
+      pattern: "^[a-z0-9-]{0,40}$"
+      # WHAT THIS QUESTION TAKES. Read by the drop zone — which uses it for the
+      # file picker's filter AND for the sentence underneath it — and enforced
+      # again at deploy time by validation.py.
+      #
+      # ONE FILE, unlike a RAG corpus: a batch run processes a single dataset,
+      # and accepting several would raise the question of which one it ran.
+      accept: [".csv", ".jsonl"]
+      maxFiles: 1
+      # 200MB. A dataset is machine-generated records, not prose — the bundled
+      # iris sample alone is 5,000 rows, and a real run is hundreds of
+      # thousands. Sized against what the rest of the system survives: `scratch`
+      # is 5Gi, and the driver streams the file a line at a time.
+      maxBytes: 209715200
+
+    - name: inputFormat
+      type: enum
+      group: resources
+      label: "File format"
+      help: "How your file is laid out. The upload preview detects this for you."
+      required: true
+      values:
+        - value: csv
+          label: "CSV — a header row, then one record per line"
+        - value: jsonl
+          label: "JSONL — one JSON object per line"
+      default: csv
+
+    # WHICH COLUMN HOLDS THE INPUT. Free text in the schema, but the wizard
+    # turns it into a SELECT over the columns the upload preview detected —
+    # which is why POST /api/uploads returns a preview at all. A PI typing a
+    # column name from memory is how you get a run that processes 5,000 rows of
+    # nothing.
+    # ONE OR MORE COLUMNS, IN ORDER — and the order is part of the answer.
+    #
+    # This was a single column, and that could not express the commonest case
+    # there is. The bundled iris sample has FOUR feature columns and a
+    # classifier needs all four in one instance: asking for one meant sending
+    # `5.1` where the model expected `[5.1, 3.5, 1.4, 0.2]`.
+    #
+    # What the two interfaces do with the list differs, and both are natural:
+    #
+    #   predict-v1  the columns, IN ORDER, are the feature vector. Reordering
+    #               them changes what every row means, which is why this is a
+    #               list and not a set.
+    #   chat        they become {input} in the prompt — bare for one column,
+    #               labelled `name: value` for several so the model can tell
+    #               them apart. Any column can also be referenced by name as
+    #               {column_name}, whether or not it is in this list.
+    #
+    # The wizard renders it as a multi-select over the columns the upload
+    # preview detected, which is why no `values` are declared here: they come
+    # from the PI's own file.
+    - name: inputFields
+      type: multiselect
+      group: resources
+      label: "Which columns the model reads"
+      help: >-
+        Chosen from the columns we found in your file. For a classic model these
+        are the features, in order. For a chat model they become the text the
+        prompt asks about.
+      required: true
+      pattern: "^[A-Za-z0-9_.\\- ]{1,64}$"
+
+    # CHAT MODELS ONLY. The wizard hides it for a predict-v1 model, because a
+    # classifier has no prompt — and `{input}` is the whole contract, so the
+    # validator refuses a template without it rather than letting a run produce
+    # 200 identical answers.
+    - name: promptTemplate
+      type: string
+      group: resources
+      label: "What to ask about each row"
+      help: >-
+        Written once and used for every row. {input} is replaced by the columns
+        you chose above; you can also name any other column directly, like
+        {title}. Only used by chat models.
+      required: false
+      default: |-
+        Classify the topic and the sentiment of the following text. Answer as JSON with keys "topic" and "sentiment".
+
+        Text: {input}
+
+    # THE TESTING BRAKE. First thing a sensible person reaches for, so it is
+    # near the top of what they can change and its help says what it is for.
+    - name: maxRows
+      type: integer
+      group: resources
+      label: "How many rows to process"
+      help: "Cap the run while you are testing."
+      required: true
+      minimum: 0
+      maximum: 1000000
+      default: 200
+
+    # predict-v1 ONLY — how many rows ride in one {"instances": [...]} request.
+    # This is where the throughput of a classic model comes from: 5,000 rows in
+    # 79 requests rather than 5,000.
+    - name: batchSize
+      type: integer
+      group: resources
+      label: "Rows per request"
+      help: >-
+        How many rows are sent together. Larger is faster, up to a point. Only
+        used by classic models.
+      required: true
+      minimum: 1
+      maximum: 256
+      default: 64
+
+    # chat ONLY — a chat model answers one row at a time, so the only lever is
+    # how many are in flight. Capped at 8 because the sidecar is one process on
+    # a laptop CPU and more requests do not make it faster, they make each one
+    # slower.
+    - name: concurrency
+      type: integer
+      group: resources
+      label: "Rows in flight at once"
+      help: >-
+        How many rows are being worked on simultaneously. Only used by chat
+        models.
+      required: true
+      minimum: 1
+      maximum: 8
+      default: 2
+
+    # WHEN TO GIVE UP. A run that is failing on most rows is misconfigured — the
+    # wrong column, a prompt the model cannot answer — and burning an hour of
+    # GPU to produce a file of errors helps nobody. The driver aborts once this
+    # is exceeded, and still writes the summary so the reason is inspectable.
+    - name: maxFailureRatePct
+      type: integer
+      group: resources
+      label: "Stop if this percentage of rows fail"
+      help: >-
+        A run that is mostly failing is usually pointed at the wrong column.
+        Stopping early leaves you the errors to look at.
+      required: true
+      minimum: 0
+      maximum: 100
+      default: 10
+
+    - name: tier
+      type: enum
+      group: resources
+      label: "Size"
+      help: >-
+        How much of the shared hardware your run may use at once. Both sizes are
+        one GPU on this local rehearsal cluster.
+      required: true
+      values:
+        - value: small
+          label: "Small"
+          description: >-
+            One GPU. Enough for the sample datasets and for most classifier runs.
+        - value: medium
+          label: "Medium"
+          description: >-
+            One GPU locally, larger on the real cluster. Choose this for long
+            chat runs over many thousands of rows.
+      default: small
+
+    # THE CEILING ON THE WORK ITSELF, enforced as the Job's
+    # activeDeadlineSeconds — by Kubernetes, at the workload, not by Studio
+    # watching a clock. A run that overruns is killed and reported as a timeout.
+    - name: runTimeoutMinutes
+      type: integer
+      group: basics
+      label: "Give up after"
+      help: >-
+        Minutes. Your run is stopped if it takes longer than this, so a
+        misconfigured job cannot hold hardware all night.
+      required: true
+      minimum: 5
+      maximum: 720
+      default: 60
+
+    # THE CLOCK THAT REPLACES `durationDays`. A run's project does not need to
+    # live for a month; its RESULTS do. Written as hive.ksl/expiry at
+    # completion, once there is something worth keeping.
+    - name: artifactRetentionDays
+      type: integer
+      group: basics
+      label: "Keep the results for"
+      help: >-
+        Days. Your results stay downloadable for this long after the run
+        finishes, then the project and everything in it is removed.
+      required: true
+      minimum: 1
+      maximum: 30
+      default: 14
+
+  # -------------------------------------------------------------------------
+  # RESOURCES — what gets provisioned, in this order.
+  # -------------------------------------------------------------------------
+  # Six entries, five files: `vcluster` has no fragment, for the same reason it
+  # has none in the other two templates — a vCluster is created by running
+  # `vcluster create`, not by applying a manifest.
+  #
+  # `dataset-upload` and `collect-results` BOTH render from staging-pod.yaml.tmpl
+  # (see RESOURCE_TO_FRAGMENT in app/catalog.py). One throwaway busybox pod
+  # serves both directions: a PVC is not writable — or readable — from outside
+  # the cluster, so moving a file either way needs a container with the volume
+  # mounted. Writing it twice would be two copies of the same trap.
+  #
+  # WHY THE vCLUSTER AT ALL, when nothing is authored inside it: because the PI
+  # is still a tenant. They get the same private control plane, the same
+  # kubeconfig and the same ability to inspect their own project as any other
+  # template gives them. Dropping it for runs would make "you get a real
+  # cluster" conditional on which card you clicked.
+  #
+  # `model-seed-job`, NOT `model-seed`, AND THE DIFFERENCE IS LOAD-BEARING. Both
+  # spellings plan to the same step (`model-seed`, see RESOURCE_TO_STEP), but
+  # the resource name is ALSO the fragment name, and `model-seed` is rag-stack's
+  # two-model seed Job — it renders a chat model AND an embedding model into one
+  # Job. This template seeds exactly one model, exactly as inference-endpoint
+  # does, so it declares inference-endpoint's spelling and gets its value set.
+  # Declaring `model-seed` here made the renderer ask for an embedding model
+  # this template never offers, and every batch deployment failed to render.
+  resources:
+    - namespace-pack
+    - model-seed-job
+    - vcluster
+    - dataset-upload
+    - batch-run
+    - collect-results
+
+  # -------------------------------------------------------------------------
+  # OUTPUTS — what the PI is handed when it finishes.
+  # -------------------------------------------------------------------------
+  #   rowsProcessed / rowsFailed  what the driver actually did, from its own
+  #                               machine-readable BATCH_RESULT line
+  #   durationSeconds             wall clock of the work, not of the pipeline
+  #   rowsPerSecond               the number a researcher will quote
+  #   artifacts                   the files, with sizes, available to download
+  #   resultsAvailableUntil       when the above stop being downloadable
+  outputs:
+    - rowsProcessed
+    - rowsFailed
+    - durationSeconds
+    - rowsPerSecond
+    - artifacts
+    - resultsAvailableUntil
+
+  # -------------------------------------------------------------------------
+  # THE CEILING THIS TEMPLATE WRITES
+  # -------------------------------------------------------------------------
+  # `batch` is the plain tier quota with storage widened, for one reason: a run
+  # has a dataset going in and results coming out, and both live on `scratch`.
+  # 5Gi of scratch holds a 200MB upload and its output many times over.
+  #
+  #   requests.storage        10Gi   models 1 + scratch 5 + the vCluster's own
+  #                                  etcd claim 5 would be 11, so the vCluster
+  #                                  claim is the binding one — see the fragment
+  #   persistentvolumeclaims  6      models, scratch, vCluster data = 3 used
+  #
+  # GPU, cpu and memory are IDENTICAL to the tier. A batch run uses exactly one
+  # GPU, held by the sidecar, for exactly as long as the work takes.
+  quotaProfile: batch
+
+  # -------------------------------------------------------------------------
+  # LIFECYCLE — a RUN, not a service
+  # -------------------------------------------------------------------------
+  lifecycle:
+    kind: run
+
+    # Both name a PARAMETER rather than carrying a number, the same indirection
+    # `ttl.fromParameter` uses on the other templates: the value stays a question
+    # the PI answers.
+    runTimeoutMinutes: runTimeoutMinutes
+    artifactRetentionDays: artifactRetentionDays
+
+    # Reverse dependency order. Shorter than the other templates because a run
+    # leaves less behind, and each position still matters:
+    #
+    #   batch-run first    the Job may still be running. Deleting it stops the
+    #                      work and releases the GPU immediately, rather than
+    #                      waiting for a run nobody wants any more to finish.
+    #   vcluster second    deleting its host namespace first would strand the
+    #                      StatefulSet and its etcd PVC.
+    #   namespace-pack     takes the quota, the LimitRange, both PVCs — and
+    #                      therefore the dataset AND the results — with it.
+    #
+    # `dataset-upload` and `collect-results` are deliberately ABSENT: both
+    # delete their own staging pod inside the step that created it, so by
+    # teardown there is nothing of either left to remove. A teardown step that
+    # always finds nothing reads like a bug.
+    teardownOrder:
+      - batch-run
+      - vcluster
+      - namespace-pack

@@ -1,0 +1,112 @@
+# ===========================================================================
+# ARCHETYPE T-SZ — PI C (tenant Inf-103), SCALE-TO-ZERO
+# ===========================================================================
+# This is the bursty archetype. `autoscaling.knative.dev/min-scale: "0"` lets the
+# Knative autoscaler remove the last replica once traffic stops, so an idle service
+# holds NO GPU and costs nothing. The price is a cold start on the next request —
+# measured at ~14-15s for this model in Gate G1.
+#
+# That is the exact inverse of T-AO's trade, and the reason HIVE offers both: PI A
+# needs predictable latency and will pay for a permanently held GPU; PI C runs
+# occasional batches and would rather wait than reserve hardware.
+#
+# Three annotations, not one, and each does a distinct job:
+#
+#   min-scale: "0"        permits zero replicas at all
+#   window: "60s"         the autoscaler's averaging window — it will not conclude
+#                         "idle" until it has a full window with no traffic
+#   scale-down-delay: "60s"  after deciding to scale down, wait this long before
+#                         actually removing the pod. Damps flapping: a service that
+#                         is hit every ~90s should not tear down and cold-start
+#                         repeatedly.
+#
+# Without the latter two, min-scale 0 alone would use Knative's cluster defaults and
+# the archetype's idle behaviour would be implicit rather than declared.
+#
+# LOCAL VALUES ARE 60s/60s; PRODUCTION IS 30m/30m. Logged in DEVIATIONS.md. The short
+# local windows exist so a human can actually observe scale-to-zero inside a test run
+# instead of waiting half an hour; they are the only difference from production, and
+# they are two string values in this file.
+#
+# THE MODEL IS A STAND-IN, as for T-AO: archetype behaviour is the deliverable, not
+# model realism. What must be proven is that an idle service releases its GPU and
+# recovers on demand.
+#
+# ---------------------------------------------------------------------------
+# WHERE THIS IS APPLIED, AND WHERE IT RUNS
+# ---------------------------------------------------------------------------
+# AUTHORED inside the tenant's own vCluster:
+#   vcluster connect inf-103 -n p-inf-103 -- kubectl apply -f - < this file
+#
+# RECONCILED on the host by the ONE central KServe (§2.2), against a mirrored copy in
+# host namespace p-inf-103 named `species-classifier-x-default-x-inf-103`.
+#
+# ---------------------------------------------------------------------------
+# WHY storageUri IS `pvc://models` AND NOT `pvc://models/model.joblib`
+# ---------------------------------------------------------------------------
+# `pvc://` does NOT use a storage-initializer download. KServe mounts the PVC directly
+# at /mnt/models and any path after the claim name becomes a **subPath**. From KServe
+# v0.20's storage_initializer_injector.go:
+#
+#     // Pvc will be mount to /mnt/models rather than /mnt/pvc.
+#     // PvcPath will be injected via SubPath, pvcPath must be a root or Dir.
+#
+# The sklearn server then treats /mnt/models as a DIRECTORY and globs it for exactly
+# one .joblib/.pkl/.pickle file. So a file path would mount a file where a directory
+# is required; `pvc://models` mounts the claim ROOT, which holds exactly
+# `model.joblib` as seeded in step 5.
+#
+# The claim resolves in the namespace the POD runs in — the HOST namespace p-inf-103
+# after sync.
+apiVersion: serving.kserve.io/v1beta1
+kind: InferenceService
+metadata:
+  name: species-classifier
+  namespace: default
+  labels:
+    hive.ksl/project: inf-103
+    hive.ksl/template: t-sz
+    hive.ksl/gate: g3-archetype
+  annotations:
+    # Per-service assertion of the cluster-wide default (§2.2). KServe's compiled-in
+    # fallback is Standard, so stating it here keeps the archetype from degrading
+    # silently if the cluster default were ever lost.
+    serving.kserve.io/deploymentMode: "Serverless"
+    # Permit zero replicas — the defining property of T-SZ.
+    autoscaling.knative.dev/min-scale: "0"
+    # Local: 60s. Production: 30m. See DEVIATIONS.md.
+    autoscaling.knative.dev/window: "60s"
+    autoscaling.knative.dev/scale-down-delay: "60s"
+spec:
+  predictor:
+    # ===========================================================================
+    # THIS FIELD IS LOAD-BEARING. THE ANNOTATION ALONE DOES NOT WORK.
+    # ===========================================================================
+    # `autoscaling.knative.dev/min-scale: "0"` above is NOT sufficient on its own.
+    # KServe derives the Knative min-scale annotation from THIS field and overwrites
+    # whatever the isvc annotation said. `minReplicas` defaults to 1 when unset, so
+    # with only the annotation the generated Knative Service ends up carrying:
+    #
+    #     autoscaling.knative.dev/min-scale: 1     <-- clobbered, not 0
+    #
+    # Observed directly: the service then never scales to zero. It sat at 1 pod for
+    # 347s of complete idleness, holding a GPU, while `window` and `scale-down-delay`
+    # HAD propagated correctly — because KServe has no spec field for those two and
+    # passes them straight through. Only min-scale is overridden, which is what makes
+    # the failure so easy to miss.
+    #
+    # So both are kept, with different jobs:
+    #   minReplicas: 0   what KServe actually honours — the mechanism
+    #   annotation       declares archetype intent at the tenant-facing layer, and
+    #                    stays correct if a future KServe stops overriding it
+    minReplicas: 0
+    model:
+      modelFormat:
+        name: sklearn
+      # Claim root mounted at /mnt/models — see the header.
+      storageUri: "pvc://models"
+      resources:
+        limits:
+          # The ONE GPU request surface (§2.3), identical to T-AO and to production.
+          # Unlike T-AO this GPU is RELEASED when the service scales to zero.
+          nvidia.com/gpu: "1"

@@ -1,0 +1,145 @@
+# ===========================================================================
+# STUDIO FRAGMENT — INGESTION JOB (the `ingestion` resource)
+# Rendered by studio/backend into tenants/$project/rendered/ingestion-job.yaml
+# ===========================================================================
+# THE STEP THAT TURNS A FOLDER OF DOCUMENTS INTO A SEARCHABLE INDEX. It reads
+# the corpus the staging pod left on `scratch`, splits it into overlapping
+# passages, embeds each one with fastembed on CPU, and upserts them into the
+# project's Qdrant collection.
+#
+# It is the only place in the project where the embedding model and the chunking
+# rules are applied at INDEX time. The RAG service applies the same embedding at
+# QUERY time — from the same cache, named by the same `EMBED_MODEL` — and that
+# agreement is the whole correctness condition of retrieval. Two different
+# models would put the question and the documents in different vector spaces and
+# return confident nonsense, so both containers read the value from this same
+# catalogue entry rather than each having a default.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS RUNS ON THE HOST AND NOT INSIDE THE vCLUSTER
+# ---------------------------------------------------------------------------
+# Because it must mount `models` and `scratch`, and a pod authored inside a
+# vCluster cannot: the syncer maps a virtual PVC to a NEW host PVC, so this Job
+# would run happily against an empty volume, index nothing, and report success.
+# That failure is silent, which is what makes it worth stating here rather than
+# only in the template header.
+#
+# ---------------------------------------------------------------------------
+# IDEMPOTENCE, AND WHAT `backoffLimit: 1` MEANS
+# ---------------------------------------------------------------------------
+# /app/ingest.py recreates the collection — delete-if-exists, then create — so
+# running it twice produces the same index rather than a doubled one. That is
+# what makes a retried deployment safe.
+#
+# `backoffLimit: 1` (one retry) rather than the default 6, because the failures
+# this Job actually has are not transient: an unreadable corpus, a missing
+# embedding cache, a Qdrant that is not there. Six attempts at a deterministic
+# failure is five minutes of a PI watching a progress bar for a run that was
+# never going to succeed. The one retry covers the genuine race — Qdrant
+# reporting ready a moment before it accepts writes.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT
+# ---------------------------------------------------------------------------
+# Two passes: `#@if` / `#@end` blocks first (none here), then string.Template
+# substitution. A LITERAL dollar sign must be written `$`.
+#
+# Placeholders:
+#   $project               project name
+#   $rag_image             hive-local/rag-toolkit:<tag>
+#   $embed_fastembed_name  the exact fastembed registry id, from models.yaml
+#   $embed_dims            the model's vector width, from models.yaml
+#   $embed_distance        Cosine | Dot | Euclid, spelled as Qdrant spells it
+#   $collection            the Qdrant collection name, "<project>-corpus"
+# ===========================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: my-rag-ingest
+  namespace: p-my-rag
+  labels:
+    hive.ksl/project: my-rag
+    hive.ksl/role: ingestion
+    hive.ksl/template: studio-rag
+spec:
+  backoffLimit: 1
+  template:
+    metadata:
+      labels:
+        hive.ksl/project: my-rag
+        hive.ksl/role: ingestion
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: ingest
+          image: hive-local/rag-toolkit:0.1.0
+          # Built locally and `kind load`ed; it exists in no registry. Without
+          # this the kubelet tries Docker Hub and the pod sits in
+          # ImagePullBackOff, which looks like a network fault and is not one.
+          imagePullPolicy: Never
+          command: ["python", "/app/ingest.py"]
+          env:
+            # Where the staging pod left the PI's files. The staging pod creates
+            # this directory even when the copy brings nothing, so ingest.py can
+            # distinguish "no documents" from "no corpus directory".
+            - name: CORPUS_DIR
+              value: /mnt/scratch/corpus
+            # fastembed's cache_dir. The model is already here — the seed Job
+            # put it there — and ingest.py loads with local_files_only=True, so
+            # a missing cache is an immediate, explicit failure rather than a
+            # silent download onto a read-only mount.
+            - name: MODELS_DIR
+              value: /mnt/models
+            # The directory under `models` the seed Job wrote the ONNX cache
+            # into, taken from the catalogue entry's storageSubpath rather than
+            # hard-coded to "embed" in three programs. The toolkit defaults to
+            # "embed" if this is unset, so changing storageSubpath in models.yaml
+            # cannot silently point the seeder and the reader at different
+            # directories.
+            - name: EMBED_SUBPATH
+              value: "embed"
+            - name: EMBED_MODEL
+              value: "BAAI/bge-small-en-v1.5"
+            - name: EMBED_DIMS
+              value: "384"
+            - name: EMBED_DISTANCE
+              value: "Cosine"
+            # The in-cluster Service from qdrant.yaml. HTTP (6333), not gRPC:
+            # everything in this repository speaks REST to Qdrant, so there is
+            # one protocol to reason about when a request fails.
+            - name: QDRANT_URL
+              value: "http://my-rag-qdrant:6333"
+            - name: COLLECTION
+              value: "my-rag-corpus"
+          volumeMounts:
+            # READ-ONLY. Only the seed Job writes to `models`, and mounting it
+            # read-only here is what makes "the query path never downloads
+            # anything" enforceable rather than merely intended.
+            - name: models
+              mountPath: /mnt/models
+              readOnly: true
+            # Read-write, though this Job only reads. It is the same
+            # ReadWriteOnce claim the staging pod wrote to, and a read-only
+            # mount here would buy nothing: the staging pod is already gone by
+            # the time this runs, and the corpus is deleted with the namespace.
+            - name: scratch
+              mountPath: /mnt/scratch
+          # Explicit, for the same reason as the seed Job: the LimitRange's
+          # 512Mi default would OOM-kill the ONNX session as it loads, and an
+          # Exit 137 with no log is the least diagnosable failure this pipeline
+          # can produce. 2Gi is comfortable for bge-small (67MB) plus
+          # onnxruntime plus a batch of vectors in flight.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models
+        - name: scratch
+          persistentVolumeClaim:
+            claimName: scratch

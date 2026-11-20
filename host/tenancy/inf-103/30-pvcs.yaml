@@ -1,0 +1,51 @@
+# Persistent storage for tenant Inf-103.
+#
+# Two claims with different jobs:
+#   models  — model artefacts, seeded once by 40-seed-models-job.yaml and thereafter
+#             mounted READ-ONLY by serving pods.
+#   scratch — writable working space (caches, temp files) that must survive a pod
+#             restart but carries nothing precious.
+#
+# Both count against the quota's `persistentvolumeclaims: "4"` and their combined
+# 2Gi counts against `requests.storage: 5Gi`.
+#
+# storageClassName `standard` is kind's local-path provisioner (production: WekaFS
+# CSI with directory quotas — see DEVIATIONS.md). Two consequences of local-path
+# worth knowing:
+#
+#   * Its volumeBindingMode is WaitForFirstConsumer, so these PVCs stay **Pending
+#     until a pod actually mounts one**. A Pending PVC here is NOT a fault — it is
+#     the provisioner waiting to learn which node to create the directory on.
+#   * The volume is a directory on one node's disk, so ReadWriteOnce is the only
+#     honest access mode: pods sharing it must land on the same node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models
+  namespace: p-inf-103
+  labels:
+    hive.ksl/project: inf-103
+    hive.ksl/role: models
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scratch
+  namespace: p-inf-103
+  labels:
+    hive.ksl/project: inf-103
+    hive.ksl/role: scratch
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi

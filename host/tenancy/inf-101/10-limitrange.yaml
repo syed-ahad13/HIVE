@@ -1,0 +1,46 @@
+# Default container resources for tenant Inf-101.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS IS MANDATORY, NOT A CONVENIENCE
+# ---------------------------------------------------------------------------
+# Once the ResourceQuota in 20-resourcequota.yaml sets `limits.cpu` and
+# `limits.memory`, Kubernetes REQUIRES every container in this namespace to state
+# those values. A pod that omits them cannot be accounted for against the quota, so
+# the quota admission controller REJECTS it outright:
+#
+#     Error from server (Forbidden): pods "x" is forbidden: failed quota:
+#     tier-quota: must specify limits.cpu for: <container>
+#
+# A LimitRange fixes that by DEFAULTING the missing values at admission time
+# instead. So the rule to remember is:
+#
+#     quota on limits.*  ->  you MUST also ship a LimitRange
+#
+# Without it, every pod that does not spell out resources is rejected — including
+# pods you do not write yourself: the vCluster control-plane pod, Knative's
+# queue-proxy sidecar, KServe's storage-initializer init container, and Jobs like
+# 40-seed-models-job.yaml. This file is what makes those admissible.
+#
+# `default` (the limit) and `defaultRequest` (the request) are deliberately
+# different: requests are what the scheduler reserves, limits are the runtime
+# ceiling. Small requests keep scheduling flexible; larger limits allow bursting.
+#
+# NOTE: this applies ONLY to cpu and memory. Extended resources such as
+# nvidia.com/gpu are never defaulted — a pod gets a GPU only by asking for one
+# explicitly (§2.3), which is exactly the behaviour we want.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: defaults
+  namespace: p-inf-101
+spec:
+  limits:
+    - type: Container
+      # What the scheduler reserves when the pod does not say.
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      # The runtime ceiling when the pod does not say.
+      default:
+        cpu: 500m
+        memory: 512Mi

@@ -1,0 +1,217 @@
+# ===========================================================================
+# HIVE STUDIO USE-CASE TEMPLATE — INFERENCE ENDPOINT
+# ===========================================================================
+# The one template that is real today. A PI answers five questions and gets a
+# private Kubernetes control plane with a served model behind an HTTP endpoint,
+# provisioned by the pipeline in studio/backend/ from the fragments in ./resources/.
+#
+# THIS FILE IS THE CONTRACT BETWEEN THE WIZARD AND THE PIPELINE. The frontend
+# renders the form from `parameters` alone — it knows nothing about namespaces,
+# quotas or KServe — and the backend renders the fragments from the answers. Neither
+# side hard-codes the other's knowledge, which is the point of a schema-driven
+# wizard: a new parameter is a change to this file, not to two codebases.
+#
+# ---------------------------------------------------------------------------
+# NOTE ON SCHEMA FIDELITY — CHECK THIS AGAINST HIVE-DD-002 §2 BEFORE BUILDING ON IT
+# ---------------------------------------------------------------------------
+# HIVE-DD-002 is NOT in this repository (docs/ holds only G1-smoke, G3-archetypes,
+# S1-spike and T2-quota-proof). The field NAMES and VALUES below are exactly as
+# specified; the NESTING — the metadata/spec split, and the internal shape of a
+# parameter entry — was inferred, because the schema itself was not available to
+# read. If DD-002 §2 nests these differently, this file is the thing to correct, and
+# it should be corrected before studio/backend/ starts parsing it.
+# ===========================================================================
+
+apiVersion: studio.hive.ksl/v1
+kind: UseCaseTemplate
+
+metadata:
+  id: inference-endpoint
+  displayName: "Serve a model behind an API endpoint"
+  # `category` groups the card in the catalogue. Serve = "run a model and give me a
+  # URL", as opposed to Build (RAG) or Train (fine-tune).
+  category: Serve
+  # `available` means this template really provisions. The other two catalogue
+  # entries are `coming-soon` and the UI must not let a PI start them.
+  maturity: available
+  description: >-
+    Pick a model, choose whether it stays warm or sleeps when idle, and get a
+    private cluster with a working HTTP endpoint. You get your own kubeconfig, so
+    you can inspect and change everything inside your project yourself.
+
+spec:
+  # -------------------------------------------------------------------------
+  # PARAMETERS — the entire deploy wizard, in order.
+  # -------------------------------------------------------------------------
+  parameters:
+    # `projectName` is the single most load-bearing answer: it becomes the host
+    # namespace (p-<projectName>), the vCluster name, the InferenceService name, and
+    # the directory under tenants/. All four are Kubernetes names, hence the pattern.
+    - name: projectName
+      type: string
+      # Which wizard screen this appears on. See Parameter.group in
+      # studio/backend/app/schema.py — the console renders whatever the template
+      # asks for, in the order it asks, and knows nothing about these names.
+      group: basics
+      label: "Project name"
+      help: >-
+        Lowercase letters, numbers and hyphens. This becomes the name of your
+        cluster and your endpoint, and it cannot be changed afterwards.
+      required: true
+      # RFC 1123 label rules, narrowed. 3 is short enough to be memorable, 20 keeps
+      # the derived Knative route host well inside the 63-character DNS label limit
+      # once KServe appends "-predictor" and the namespace and domain are added.
+      pattern: "^[a-z0-9-]{3,20}$"
+      # Enforced by the backend, NOT by this pattern, because a regex cannot express
+      # it and a client-side check is not a control. See CLAUDE.md invariant (c):
+      # inf-101, inf-103, default, and anything starting kube- or hive- are refused.
+      reservedNames:
+        - inf-101
+        - inf-103
+        - default
+      reservedPrefixes:
+        - kube-
+        - hive-
+
+    # Sourced from the closed list. A PI selects an id; they cannot supply a URL.
+    # That closure is the governance boundary — see templates/catalog/models.yaml.
+    - name: model
+      type: enum
+      group: resources
+      label: "Model"
+      help: "Choose from the models the platform team has reviewed and mirrored."
+      required: true
+      source: models.yaml
+
+    # This is archetype selection, written in user-side language. The PI is choosing
+    # a cost/latency trade, not a Knative annotation:
+    #   always-on -> T-AO, min-scale 1, holds its GPU, answers immediately
+    #   on-demand -> T-SZ, min-scale 0, releases its GPU, ~15s first request
+    - name: availability
+      type: enum
+      group: resources
+      label: "Availability"
+      help: >-
+        Always on answers immediately but holds a GPU the whole time. On demand
+        sleeps when idle and frees the GPU, but the first request after a nap takes
+        about 15 seconds to wake it.
+      required: true
+      values:
+        - value: always-on
+          label: "Always on"
+          # The CONSEQUENCE, not a restatement of the label. This is the sentence
+          # the wizard shows under the option, and it lives here because the
+          # trade-off is a property of the archetype the catalogue defines — not
+          # of the console that happens to display it.
+          description: >-
+            Answers immediately, day or night. Holds a GPU the whole time,
+            whether or not anyone is using it.
+        - value: on-demand
+          label: "On demand"
+          description: >-
+            Sleeps when nobody is using it and frees the GPU for someone else.
+            The first request after a nap takes about 15 seconds to wake it.
+      default: always-on
+
+    # Tier is the ceiling, enforced by the ResourceQuota the pipeline writes into the
+    # HOST namespace, where the PI cannot reach it (CLAUDE.md §2.4). Both tiers are
+    # 1 GPU locally; they are still distinct because they will diverge in production.
+    - name: tier
+      type: enum
+      group: resources
+      label: "Size"
+      help: >-
+        How much of the shared hardware your project may use at once. Both sizes are
+        one GPU on this local rehearsal cluster.
+      required: true
+      values:
+        - value: small
+          label: "Small — 1 GPU"
+        - value: medium
+          label: "Medium — 1 GPU locally (larger in production)"
+      default: small
+
+    # Feeds lifecycle.ttl below, which becomes the hive.ksl/expiry annotation on the
+    # namespace (CLAUDE.md §2.6). The clock starts at provisioning and an on-demand
+    # project that sleeps for a month still ages a month — sleep never pauses it.
+    - name: durationDays
+      type: integer
+      group: basics
+      label: "How long do you need it?"
+      help: >-
+        Your project is removed automatically when this runs out, so nothing is left
+        holding hardware after you have finished with it. Ask for an extension if
+        you need longer.
+      required: true
+      minimum: 10
+      maximum: 90
+      default: 30
+
+  # NO spec-level `interface` HERE, DELIBERATELY. An inference-endpoint project
+  # IS its model, so how the endpoint is talked to is whatever models.yaml says
+  # about the model the PI chose — chat for an LLM, predict-v1 for sklearn. The
+  # playground falls back to the model when a template does not override, which
+  # is what keeps one template serving both kinds. rag-stack overrides, because
+  # there the endpoint is not the model.
+
+  # -------------------------------------------------------------------------
+  # RESOURCES — what gets provisioned, in this order.
+  # -------------------------------------------------------------------------
+  # Three of these four are declarative fragments rendered from ./resources/ into
+  # tenants/<projectName>/rendered/ and then applied (CLAUDE.md Studio invariant (a)).
+  #
+  # `vcluster` IS THE EXCEPTION AND IT IS DELIBERATE. There is no
+  # vcluster.yaml.tmpl, because a vCluster is not created by applying a manifest —
+  # the pipeline shells out to
+  #
+  #     vcluster create <projectName> -n p-<projectName> \
+  #       -f templates/t-ao-values.yaml   (availability: always-on)
+  #       -f templates/t-sz-values.yaml   (availability: on-demand)
+  #       --connect=false --add=false
+  #
+  # reusing the two archetype values files that Step 6 already proved. `--add=false`
+  # is mandatory offline (VERSIONS.md, Step 6 notes). This is the one imperative
+  # call in the pipeline and it is wrapped by the backend executor, which is the
+  # Studio equivalent of the scripts/ carve-out in the CLAUDE.md working agreements.
+  resources:
+    - namespace-pack
+    - model-seed-job
+    - vcluster
+    - inference-service
+
+  # -------------------------------------------------------------------------
+  # OUTPUTS — what the PI is handed when it finishes.
+  # -------------------------------------------------------------------------
+  #   endpointUrl   read LIVE from the InferenceService's .status.url, never
+  #                 constructed. Local URLs carry a "-predictor" segment that
+  #                 production will not have (DEVIATIONS.md), so anything that
+  #                 hard-codes the shape breaks at migration.
+  #   kubeconfig    the PI's admin credentials for their OWN vCluster. This is the
+  #                 "you get a real cluster" promise made concrete.
+  #   dashboardUrl  the Studio project page: live status, logs, playground.
+  outputs:
+    - endpointUrl
+    - kubeconfig
+    - dashboardUrl
+
+  # -------------------------------------------------------------------------
+  # LIFECYCLE
+  # -------------------------------------------------------------------------
+  lifecycle:
+    ttl:
+      # durationDays is added to the provisioning time to produce an RFC3339 UTC
+      # instant, written as hive.ksl/expiry on the namespace by namespace-pack.
+      # The host reconciler CronJob (host/reconciler/) reads that annotation and
+      # drives Active -> Draining -> Suspended -> Deleted. Studio does not enforce
+      # expiry itself; it only sets the clock the platform already honours.
+      fromParameter: durationDays
+    # Reverse dependency order, and each step matters:
+    #   inference-service first, so the workload stops and releases its GPU while
+    #     the control plane that owns it is still up.
+    #   vcluster second — deleting its host namespace first would strand the
+    #     StatefulSet and its etcd PVC.
+    #   namespace-pack last, which takes the quota, LimitRange and PVCs with it.
+    teardownOrder:
+      - inference-service
+      - vcluster
+      - namespace-pack

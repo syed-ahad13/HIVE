@@ -1,0 +1,215 @@
+# ===========================================================================
+# STUDIO FRAGMENT — NAMESPACE PACK
+# Rendered by studio/backend into tenants/$project/rendered/namespace-pack.yaml
+# ===========================================================================
+# The HOST-side ground for a Studio-provisioned project: the namespace itself, the
+# ceiling that constrains it, the defaults that make the ceiling survivable, and the
+# storage the model lands in. Everything a tenant must not be able to edit is here,
+# on the host, where a PI who is cluster-admin inside their own vCluster still has
+# no access.
+#
+# This is the Studio-generated equivalent of host/tenancy/inf-101/ and
+# host/tenancy/inf-103/, which were written by hand. The numbers below are the ones
+# those two namespaces actually run with — not the ones a first reading of the tier
+# table would suggest. Both differences are load-bearing and both are explained at
+# the field, because getting either wrong produces a failure that does not look like
+# a quota problem.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT — READ BEFORE EDITING
+# ---------------------------------------------------------------------------
+# This file is rendered in TWO passes, in this order:
+#
+#   PASS 1 — CONDITIONAL BLOCKS. Lines between `#@if <key>=<value>` and `#@end` are
+#     KEPT only when the render facts contain that key/value pair; otherwise the
+#     whole block is dropped. Marker lines are always removed. Blocks do not nest.
+#     Facts for this fragment:  tier = small | medium
+#
+#   PASS 2 — string.Template SUBSTITUTION over what pass 1 left. Placeholders are
+#     $name / ${name}. A LITERAL dollar sign must therefore be written `$`.
+#     There are none in this file, and adding one is the easiest way to break it.
+#
+# Placeholders used here:
+#   $project      the PI's project name, already validated against
+#                 ^[a-z0-9-]{3,20}$ and against the reserved list
+#   $tier         small | medium
+#   $ttl_expiry   RFC3339 UTC instant, provisioning time + durationDays
+#
+# WHY BOTH TIERS ARE PRESENT AS LITERAL BLOCKS rather than one block with
+# $quota_gpu-style placeholders: a ceiling is a governance artefact, and the whole
+# set of ceilings the platform can hand out should be readable in the file and
+# visible in a diff, not assembled at runtime from numbers held in Python. When the
+# tiers diverge in production this file shows the divergence directly.
+# ===========================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: p-coral
+  labels:
+    hive.ksl/project: coral
+    hive.ksl/tier: small
+    # Distinguishes a Studio-provisioned project from the hand-written tenants
+    # (which carry t-ao / t-sz) and from platform namespaces. This label is how
+    # Studio finds what it owns, and therefore how it avoids touching what it
+    # does not — see CLAUDE.md Studio invariant (d).
+    hive.ksl/template: studio-inference
+    # Same convention as host/tenancy/: tenant ground, not platform ground.
+    hive.ksl/kind: tenant
+  annotations:
+    # THE LIFETIME CLOCK (CLAUDE.md §2.6). RFC3339, UTC. The host reconciler CronJob
+    # reads this and drives Active -> Draining -> Suspended -> Deleted. Studio only
+    # SETS it; Studio never enforces it, and Studio must never move it once written.
+    #
+    # It starts at provisioning and it does not stop. An on-demand project that
+    # sleeps for its entire allocation still expires on schedule — sleep is a
+    # cost-saving behaviour, not a pause on the clock.
+    hive.ksl/expiry: "2026-09-27T11:58:58Z"
+---
+# ===========================================================================
+# THE CEILING
+# ===========================================================================
+# Enforced at ADMISSION TIME (CLAUDE.md §2.4): the API server refuses to create an
+# over-quota pod at all. Nothing over-quota ever runs, not even briefly.
+#
+# GPU is the binding constraint. cpu/memory/storage are deliberately roomy, because
+# this namespace holds far more than the PI's model: the vCluster control-plane pod
+# with its own API server and etcd, Knative's queue-proxy sidecar on every serving
+# pod, KServe's storage-initializer init container, and the model-seed Job. Sizing
+# those tightly starves the tenant's own control plane and produces admission
+# failures that look like tenant bugs but are platform overhead.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tier-quota
+  namespace: p-coral
+  labels:
+    hive.ksl/project: coral
+    hive.ksl/tier: small
+spec:
+  hard:
+    # !! 2, NOT 1, AND THE REASON MATTERS !!
+    #
+    # The Small tier is ONE GPU. This quota is 2 because Knative's validating webhook
+    # DRY-RUN CREATES a sample pod to validate every Revision template, requesting
+    # the same resources as the real pod. With a ceiling of exactly 1 and the real
+    # pod already holding it, the dry-run can NEVER pass:
+    #
+    #   dry run failed with pods "dry-run-validation..." is forbidden: exceeded
+    #   quota: tier-quota, requested: requests.nvidia.com/gpu=1,
+    #   used: requests.nvidia.com/gpu=1, limited: requests.nvidia.com/gpu=1
+    #
+    # KServe then retries forever and the InferenceService is pinned at READY=False
+    # *even though the pod is Running and the Knative Service, Route and Revision are
+    # all Ready*. The dry-run is unconditional in Knative v1.23 — no feature flag, no
+    # annotation gate — so it cannot be turned off. Confirmed by experiment in
+    # DEVIATIONS.md: raising to 2 made it Ready in ~20s.
+    #
+    # It bites always-on hardest, which never releases its GPU and so is permanently
+    # stuck. On-demand self-heals once it scales to zero, i.e. fails intermittently.
+    #
+    # Honest consequence, already flagged for a platform decision in DEVIATIONS.md:
+    # the ENFORCED concurrent ceiling is 2, so the quota alone no longer proves
+    # "1 GPU". count/inferenceservices below is what keeps that in check locally.
+    requests.nvidia.com/gpu: "2"
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    # 12Gi, NOT 5Gi. The vCluster StatefulSet provisions its own 5Gi etcd data PVC
+    # in THIS namespace, on top of models 1Gi + scratch 1Gi. At 5Gi the control
+    # plane can never start, and the failure shape is genuinely hard to read: the
+    # StatefulSet retries forever, NO pod is created, so `kubectl get pods` is simply
+    # EMPTY and the explanation lives only in the StatefulSet's events. Budget:
+    # 1 + 1 + 5 = 7Gi used, 5Gi headroom.
+    requests.storage: 12Gi
+    # models, scratch, and the vCluster's data-<name>-0 account for 3. 6 leaves the
+    # PI room for their own claims without the platform's volume crowding them out.
+    persistentvolumeclaims: "6"
+    # Enough for a blue/green rollout, not enough to sprawl — and, given the GPU
+    # headroom above, this is the object that actually stops a project running two
+    # 1-GPU services at once.
+    count/inferenceservices.serving.kserve.io: "2"
+---
+# ===========================================================================
+# THE DEFAULTS THAT MAKE THE CEILING SURVIVABLE — MANDATORY, NOT TIDY
+# ===========================================================================
+# Once the quota above sets limits.cpu and limits.memory, Kubernetes REQUIRES every
+# container in this namespace to state both. A pod that omits them cannot be
+# accounted for and is rejected outright:
+#
+#   Error from server (Forbidden): pods "x" is forbidden: failed quota: tier-quota:
+#   must specify limits.cpu for: <container>
+#
+# So the rule is: quota on limits.* -> you MUST also ship a LimitRange.
+#
+# Without this, everything the PI did not write is rejected: the vCluster
+# control-plane pod, Knative's queue-proxy sidecar, KServe's storage-initializer,
+# and the model-seed Job in this same pack. Values match host/tenancy/ exactly.
+#
+# NOTE this applies ONLY to cpu and memory. Extended resources such as
+# nvidia.com/gpu are never defaulted, so a pod gets a GPU only by asking for one
+# explicitly (CLAUDE.md §2.3) — which is exactly the behaviour we want.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: defaults
+  namespace: p-coral
+  labels:
+    hive.ksl/project: coral
+spec:
+  limits:
+    - type: Container
+      # What the scheduler reserves when the pod does not say.
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      # The runtime ceiling when the pod does not say. Deliberately larger than the
+      # request: small requests keep scheduling flexible, larger limits allow bursting.
+      default:
+        cpu: 500m
+        memory: 512Mi
+---
+# ===========================================================================
+# STORAGE
+# ===========================================================================
+# models   written once by the model-seed Job, then mounted by the serving pod.
+# scratch  writable working space that survives a restart but holds nothing precious.
+#
+# storageClassName `standard` is kind's local-path provisioner (production: WekaFS
+# CSI with directory quotas — DEVIATIONS.md). Two consequences worth knowing:
+#
+#   * volumeBindingMode is WaitForFirstConsumer, so these claims stay **Pending until
+#     a pod mounts one**. A Pending PVC here is NOT a fault, and the Studio
+#     provisioning UI must not report it as one — it is the provisioner waiting to
+#     learn which node to create the directory on.
+#   * The volume is a directory on ONE node's disk, so ReadWriteOnce is the only
+#     honest access mode: the seed Job and the serving pod must land on the same node.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models
+  namespace: p-coral
+  labels:
+    hive.ksl/project: coral
+    hive.ksl/role: models
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scratch
+  namespace: p-coral
+  labels:
+    hive.ksl/project: coral
+    hive.ksl/role: scratch
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi

@@ -1,0 +1,29 @@
+# Host namespace for tenant Inf-101 (PI A).
+#
+# This is the HOST-side ground for the tenant. Per CLAUDE.md §2.1 the tenant's own
+# Kubernetes control plane will later run as a vCluster named `inf-101` INSIDE this
+# namespace. Everything that constrains the tenant — ResourceQuota, LimitRange,
+# NetworkPolicy, RBAC, and the expiry clock — lives here on the host, where the
+# tenant cannot edit it. That separation is the whole point: a tenant is
+# administrator of their vCluster, but never of their own ceiling.
+#
+# Inf-101 is the always-on archetype: a long-lived LLM service, Medium tier
+# (1 GPU), 90-day allocation.
+#
+# The hive.ksl/expiry annotation (§2.6) is deliberately NOT set yet — the lifetime
+# reconciler CronJob that reads it does not exist. Adding the annotation before
+# anything enforces it would create a promise nothing keeps.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: p-inf-101
+  labels:
+    # The tenant this namespace belongs to. Selector key for per-tenant policy.
+    hive.ksl/project: inf-101
+    # Tier drives the ceiling in 20-resourcequota.yaml. Medium = 1 GPU.
+    hive.ksl/tier: medium
+    # Archetype template this tenant's InferenceServices are generated from:
+    # t-ao = always-on, autoscaling.knative.dev/min-scale "1" (§2.7).
+    hive.ksl/template: t-ao
+    # Distinguishes tenant namespaces from platform namespaces (kserve, knative-serving…).
+    hive.ksl/kind: tenant

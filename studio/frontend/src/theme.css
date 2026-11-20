@@ -1,0 +1,1798 @@
+/* ===========================================================================
+   HIVE STUDIO — DESIGN TOKENS AND BASE COMPONENTS
+   ===========================================================================
+   The four hues come straight from the architecture poster via CLAUDE.md §6, so
+   the console and the diagrams read as one system. They are not decorative and
+   they are not interchangeable:
+
+     navy   #1f3864   primary — headings, structure, the host/platform layer
+     green  #0f6e56   success, Ready, healthy
+     amber  #8a5a0d   LOCAL SHORTCUTS AND DEVIATIONS, warnings, coming-soon
+     red    #a03030   failure, expired, destructive actions
+
+   AMBER IS RESERVED. It means "this is not how production works". Using it for
+   an ordinary warning would dilute the one signal invariant (e) depends on — the
+   whole point is that a person can scan this console and see, at a glance, every
+   place the local rehearsal differs from the real platform. Those are exactly the
+   rows in DEVIATIONS.md that must be swapped at migration. If something needs
+   attention but is not a deviation, it is navy or red, never amber.
+
+   Each hue has a SOFT FILL — the same hue at low saturation — so state is carried
+   by a filled region rather than by coloured text alone. That is an accessibility
+   decision as much as an aesthetic one: colour is never the only channel, and
+   every status pill also carries a word.
+
+   NO WEB FONTS, NO CDN. The console must work on a laptop with no internet, which
+   is exactly the demo condition it exists for. The system stack below is the one
+   named in CLAUDE.md.
+   =========================================================================== */
+
+:root {
+  /* --- the four hues ---------------------------------------------------- */
+  --navy: #1f3864;
+  --green: #0f6e56;
+  --amber: #8a5a0d;
+  --red: #a03030;
+
+  /* --- soft fills: same hue, low saturation ----------------------------- */
+  --navy-soft: #eaeef6;
+  --green-soft: #e4f1ec;
+  --amber-soft: #fbf1de;
+  --red-soft: #f8e8e8;
+
+  /* --- borders for the filled regions, so a badge has an edge ----------- */
+  --navy-line: #c2cee4;
+  --green-line: #b3d7c9;
+  --amber-line: #e6cd9a;
+  --red-line: #e2b6b6;
+
+  /* --- neutrals, biased very slightly toward navy so greys sit with the
+         palette rather than against it ---------------------------------- */
+  --ink: #16202e;
+  --ink-2: #4a5567;
+  --ink-3: #78839a;
+  --ground: #f7f8fa;
+  --surface: #ffffff;
+  --surface-2: #f1f3f7;
+  --line: #dde1e9;
+  --line-strong: #c3cad6;
+
+  /* Grey is a STATE colour too: `sleeping` and `deleted` are both "nothing is
+     running", which must not read as failure (red) or as success (green). */
+  --grey: #5c6675;
+  --grey-soft: #eceef2;
+  --grey-line: #d3d8e0;
+
+  --radius: 6px;
+  --radius-sm: 4px;
+  --shadow: 0 1px 2px rgba(22, 32, 46, 0.06), 0 6px 18px -10px rgba(22, 32, 46, 0.16);
+
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+/* ===========================================================================
+   RESET AND BASE
+   =========================================================================== */
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--ground);
+  color: var(--ink);
+  font-family: var(--font);
+  font-size: 15px;
+  line-height: 1.55;
+  -webkit-font-smoothing: antialiased;
+}
+
+h1,
+h2,
+h3,
+h4 {
+  margin: 0;
+  color: var(--navy);
+  line-height: 1.25;
+  text-wrap: balance;
+}
+
+h1 {
+  font-size: 26px;
+  letter-spacing: -0.01em;
+}
+h2 {
+  font-size: 19px;
+}
+h3 {
+  font-size: 16px;
+}
+
+p {
+  margin: 0;
+  max-width: 70ch;
+}
+
+a {
+  color: var(--navy);
+}
+
+code {
+  font-family: var(--font-mono);
+  font-size: 0.88em;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  padding: 0.05em 0.32em;
+}
+
+/* Keyboard focus must always be visible. The console is operated with a mouse
+   in a demo and with a keyboard by anyone who needs to. */
+:focus-visible {
+  outline: 2px solid var(--navy);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* ===========================================================================
+   CARD
+   =========================================================================== */
+
+.card {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.card--interactive {
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.card--interactive:hover {
+  border-color: var(--line-strong);
+  box-shadow: var(--shadow);
+}
+
+/* A card for something a PI cannot start yet. Muted rather than disabled-looking:
+   it is readable, it just does not invite a click. */
+.card--muted {
+  background: var(--surface-2);
+}
+
+.card__title {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card__foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: auto;
+  padding-top: 4px;
+}
+
+/* ===========================================================================
+   BADGE — a small label describing a THING (maturity, tier, category)
+   =========================================================================== */
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 11.5px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 2px 8px;
+  border-radius: 20px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.badge--navy {
+  color: var(--navy);
+  background: var(--navy-soft);
+  border-color: var(--navy-line);
+}
+.badge--green {
+  color: var(--green);
+  background: var(--green-soft);
+  border-color: var(--green-line);
+}
+.badge--amber {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: var(--amber-line);
+}
+.badge--red {
+  color: var(--red);
+  background: var(--red-soft);
+  border-color: var(--red-line);
+}
+.badge--grey {
+  color: var(--grey);
+  background: var(--grey-soft);
+  border-color: var(--grey-line);
+}
+
+/* ===========================================================================
+   STATUS PILL — one controlled vocabulary for what a PROJECT is doing
+   ===========================================================================
+   Six words, and only these six. A controlled vocabulary matters more here than
+   anywhere else in the console, because the words are how a PI understands what
+   their project is doing without knowing Kubernetes:
+
+     provisioning  navy   being built right now
+     ready         green  the run finished
+     sleeping      grey   idle, holding no GPU. NOT a problem — the whole point
+                          of the on-demand archetype, so never amber and never red
+     waking        amber  cold-starting. Amber because the ~15s wait is a local
+                          shortcut artefact people must be told about up front
+     failed        red    a step failed
+     deleted       grey   torn down
+
+   `sleeping` and `deleted` share grey deliberately: both mean "nothing is
+   running", and neither is a fault.
+
+   IMPORTANT, per invariant (b): `ready` describes what the CLUSTER says right
+   now, read live. It is not the registry's memory of a finished run. The two
+   happen to share a word and must never share a source.
+   =========================================================================== */
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 3px 10px;
+  border-radius: 20px;
+  border: 1px solid;
+  white-space: nowrap;
+}
+
+.pill::before {
+  content: "";
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+  flex: none;
+}
+
+.pill--provisioning {
+  color: var(--navy);
+  background: var(--navy-soft);
+  border-color: var(--navy-line);
+}
+.pill--ready {
+  color: var(--green);
+  background: var(--green-soft);
+  border-color: var(--green-line);
+}
+.pill--sleeping {
+  color: var(--grey);
+  background: var(--grey-soft);
+  border-color: var(--grey-line);
+}
+.pill--waking {
+  color: var(--amber);
+  background: var(--amber-soft);
+  border-color: var(--amber-line);
+}
+.pill--failed {
+  color: var(--red);
+  background: var(--red-soft);
+  border-color: var(--red-line);
+}
+.pill--deleted {
+  color: var(--grey);
+  background: var(--grey-soft);
+  border-color: var(--grey-line);
+}
+/* Green: a finished run is a success, exactly as a Ready service is. */
+.pill--completed {
+  color: var(--green);
+  background: var(--green-soft);
+  border-color: var(--green-line);
+}
+
+/* ===========================================================================
+   BUTTONS
+   =========================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  padding: 8px 16px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  cursor: pointer;
+  text-decoration: none;
+  transition: background-color 0.12s ease, border-color 0.12s ease;
+}
+
+.btn:disabled,
+.btn[aria-disabled="true"] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.btn--primary {
+  background: var(--navy);
+  color: #fff;
+  border-color: var(--navy);
+}
+.btn--primary:hover:not(:disabled) {
+  background: #182c4f;
+}
+
+.btn--ghost {
+  background: transparent;
+  color: var(--navy);
+  border-color: var(--line-strong);
+}
+.btn--ghost:hover:not(:disabled) {
+  background: var(--navy-soft);
+  border-color: var(--navy-line);
+}
+
+/* Destructive actions are red per the token table. Filled rather than outlined,
+   so "delete my project" never looks like an ordinary secondary action. */
+.btn--danger {
+  background: var(--red);
+  color: #fff;
+  border-color: var(--red);
+}
+.btn--danger:hover:not(:disabled) {
+  background: #8a2828;
+}
+
+.btn--sm {
+  font-size: 13px;
+  padding: 5px 12px;
+}
+
+/* ===========================================================================
+   AMBER BANNER — "this is not how production works"
+   ===========================================================================
+   Invariant (e): every local shortcut shows one. A demo that hides its
+   scaffolding teaches the audience something false.
+   =========================================================================== */
+
+.banner-amber {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  background: var(--amber-soft);
+  border: 1px solid var(--amber-line);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  color: var(--amber);
+  font-size: 13.5px;
+  line-height: 1.5;
+}
+
+.banner-amber strong {
+  font-weight: 700;
+}
+
+.banner-amber__icon {
+  flex: none;
+  font-weight: 700;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* The permanent one in the app chrome spans the full width and squares off, so
+   it reads as part of the frame rather than as a dismissible message. */
+.banner-amber--bar {
+  border-radius: 0;
+  border-left: none;
+  border-right: none;
+  border-top: none;
+  padding: 8px 22px;
+}
+
+/* ===========================================================================
+   LAYOUT
+   =========================================================================== */
+
+.app {
+  display: flex;
+  flex-direction: column;
+  min-height: 100%;
+}
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 0 22px;
+  height: 54px;
+  background: var(--navy);
+  color: #fff;
+  flex: none;
+}
+
+.wordmark {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 16px;
+  font-weight: 700;
+  letter-spacing: 0.01em;
+  color: #fff;
+  text-decoration: none;
+}
+
+.wordmark span {
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+.identity {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13px;
+}
+
+.identity__chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(255, 255, 255, 0.12);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  border-radius: 20px;
+  padding: 3px 6px 3px 10px;
+  color: #fff;
+}
+
+.identity__role {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: rgba(255, 255, 255, 0.16);
+  border-radius: 12px;
+  padding: 1px 7px;
+}
+
+.identity__signout {
+  background: none;
+  border: none;
+  color: #fff;
+  opacity: 0.8;
+  font: inherit;
+  font-size: 12.5px;
+  cursor: pointer;
+  text-decoration: underline;
+  padding: 0 4px;
+}
+
+.identity__signout:hover {
+  opacity: 1;
+}
+
+.shell {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+.nav {
+  width: 210px;
+  flex: none;
+  background: var(--surface);
+  border-right: 1px solid var(--line);
+  padding: 18px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.nav__link {
+  display: block;
+  padding: 8px 12px;
+  border-radius: var(--radius-sm);
+  color: var(--ink-2);
+  text-decoration: none;
+  font-size: 14.5px;
+  font-weight: 500;
+}
+
+.nav__link:hover {
+  background: var(--surface-2);
+  color: var(--ink);
+}
+
+.nav__link--active {
+  background: var(--navy-soft);
+  color: var(--navy);
+  font-weight: 650;
+}
+
+.nav__label {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--ink-3);
+  padding: 10px 12px 4px;
+  font-weight: 600;
+}
+
+.main {
+  flex: 1;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 26px 30px 60px;
+}
+
+.page {
+  max-width: 900px;
+  display: flex;
+  flex-direction: column;
+  gap: 22px;
+}
+
+.page__head {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.page__head p {
+  color: var(--ink-2);
+}
+
+/* ===========================================================================
+   PIECES
+   =========================================================================== */
+
+.section {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.section__head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 7px;
+}
+
+.section__count {
+  font-size: 12.5px;
+  color: var(--ink-3);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 14px;
+}
+
+.muted {
+  color: var(--ink-2);
+}
+
+.small {
+  font-size: 13.5px;
+}
+
+.tablewrap {
+  overflow-x: auto;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+table {
+  border-collapse: collapse;
+  width: 100%;
+  font-size: 14px;
+}
+
+th,
+td {
+  text-align: left;
+  padding: 9px 14px;
+  border-top: 1px solid var(--line);
+  vertical-align: top;
+}
+
+thead th {
+  border-top: none;
+  background: var(--surface-2);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink-3);
+  font-weight: 600;
+}
+
+td.num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Numbered list of what will happen, used on the template detail page. */
+.steps {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.steps__row {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 12px;
+  background: var(--surface);
+  padding: 11px 15px;
+}
+
+.steps__n {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--navy);
+  padding-top: 2px;
+}
+
+.steps__body b {
+  font-weight: 650;
+}
+
+.steps__body span {
+  display: block;
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+
+.params {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.params__row {
+  background: var(--surface);
+  padding: 12px 15px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.params__row b {
+  font-weight: 650;
+}
+
+.params__row span {
+  color: var(--ink-2);
+  font-size: 13.5px;
+}
+
+.params__opts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+/* ===========================================================================
+   LOADING / EMPTY / ERROR
+   ===========================================================================
+   Every fetch gets all three. A blank screen while something loads is the most
+   common way a working app looks broken.
+   =========================================================================== */
+
+.state {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 26px 22px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+
+.state--error {
+  border-color: var(--red-line);
+  background: var(--red-soft);
+}
+
+.state__title {
+  font-weight: 650;
+  color: var(--ink);
+}
+
+.state--error .state__title {
+  color: var(--red);
+}
+
+.state__detail {
+  font-size: 13.5px;
+  color: var(--ink-2);
+  font-family: var(--font-mono);
+  word-break: break-word;
+}
+
+/* A shimmer-free skeleton: three grey bars. Deliberately static — an animated
+   pulse next to a permanent amber banner is visual noise competing with the one
+   thing on screen that must be noticed. */
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 9px;
+  width: 100%;
+}
+
+.skeleton__bar {
+  height: 11px;
+  border-radius: 3px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+}
+
+.skeleton__bar:nth-child(2) {
+  width: 78%;
+}
+.skeleton__bar:nth-child(3) {
+  width: 54%;
+}
+
+/* ===========================================================================
+   SIGN-IN
+   =========================================================================== */
+
+.signin {
+  min-height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 30px 20px;
+  background: var(--ground);
+}
+
+.signin__box {
+  width: 100%;
+  max-width: 430px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.signin__brand {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 21px;
+  font-weight: 700;
+  color: var(--navy);
+}
+
+.signin__brand span {
+  font-weight: 400;
+  color: var(--ink-2);
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.field label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.field small {
+  color: var(--ink-3);
+  font-size: 12.5px;
+}
+
+.field input,
+.field select {
+  font-family: inherit;
+  font-size: 14.5px;
+  padding: 9px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--ink);
+}
+
+.field input:focus,
+.field select:focus {
+  outline: 2px solid var(--navy);
+  outline-offset: 1px;
+  border-color: var(--navy);
+}
+
+/* ===========================================================================
+   WIZARD
+   =========================================================================== */
+
+.rail {
+  display: flex;
+  gap: 8px;
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  flex-wrap: wrap;
+}
+
+.rail__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13.5px;
+  color: var(--ink-3);
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 20px;
+  padding: 5px 14px 5px 6px;
+}
+
+.rail__n {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 21px;
+  height: 21px;
+  border-radius: 50%;
+  background: var(--surface-2);
+  color: var(--ink-3);
+  font-size: 11.5px;
+  font-weight: 700;
+}
+
+.rail__item--now {
+  color: var(--navy);
+  border-color: var(--navy-line);
+  background: var(--navy-soft);
+  font-weight: 650;
+}
+.rail__item--now .rail__n {
+  background: var(--navy);
+  color: #fff;
+}
+
+.rail__item--done {
+  color: var(--green);
+  border-color: var(--green-line);
+  background: var(--green-soft);
+}
+.rail__item--done .rail__n {
+  background: var(--green);
+  color: #fff;
+}
+
+.wizard__foot {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  border-top: 1px solid var(--line);
+  padding-top: 16px;
+}
+
+.field__error {
+  color: var(--red);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+/* The two names derived from the project name, shown while it can still change. */
+.derived {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 26px;
+  background: var(--navy-soft);
+  border: 1px solid var(--navy-line);
+  border-radius: var(--radius-sm);
+  padding: 9px 13px;
+  margin-top: 6px;
+}
+
+.derived > div {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.derived span {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--navy);
+  opacity: 0.75;
+}
+
+.derived code {
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--navy);
+  font-weight: 600;
+  font-size: 13.5px;
+}
+
+.choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.choice {
+  display: flex;
+  gap: 11px;
+  align-items: flex-start;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  cursor: pointer;
+  background: var(--surface);
+}
+
+.choice:hover {
+  border-color: var(--line-strong);
+}
+
+.choice--on {
+  border-color: var(--navy);
+  background: var(--navy-soft);
+}
+
+.choice input {
+  margin-top: 3px;
+  accent-color: var(--navy);
+}
+
+.choice span {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.choice small {
+  color: var(--ink-2);
+  font-size: 13px;
+}
+
+/* Live quota preview. Navy because it describes the platform's ceiling — a
+   structural fact, not a warning. */
+.quota {
+  background: var(--navy-soft);
+  border: 1px solid var(--navy-line);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.quota__head {
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--navy);
+}
+
+.quota__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(110px, 1fr));
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.quota__grid > div {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.quota__grid dt {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-3);
+}
+
+.quota__grid dd {
+  margin: 0;
+  font-weight: 650;
+  color: var(--navy);
+  font-variant-numeric: tabular-nums;
+}
+
+/* --- disclosure + YAML ---------------------------------------------------- */
+
+.disclose {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 650;
+  color: var(--navy);
+  cursor: pointer;
+  text-align: left;
+}
+
+.disclose--sm {
+  font-size: 13px;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+.disclose__caret {
+  font-size: 11px;
+  width: 12px;
+}
+
+.yaml__name {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  margin: 12px 0 4px;
+}
+
+.yaml__toggle {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  color: var(--navy);
+  cursor: pointer;
+  text-decoration: underline;
+}
+
+/* Read-only, and it must LOOK read-only: no border-radius flourishes, a plain
+   scrollable block. Horizontal overflow is contained here so the page body
+   never scrolls sideways. */
+.yaml {
+  margin: 0;
+  background: #101922;
+  color: #dce6f0;
+  border: 1px solid #2b3947;
+  border-radius: var(--radius-sm);
+  padding: 12px 14px;
+  overflow-x: auto;
+  max-height: 380px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
+.yaml code {
+  background: none;
+  border: none;
+  padding: 0;
+  font-size: inherit;
+  white-space: pre;
+}
+
+.yaml--log {
+  max-height: 220px;
+  margin-top: 7px;
+}
+
+/* ===========================================================================
+   PROGRESS
+   =========================================================================== */
+
+.plist {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  background: var(--line);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.prow {
+  display: grid;
+  grid-template-columns: 26px 1fr;
+  gap: 12px;
+  background: var(--surface);
+  padding: 12px 15px;
+  align-items: start;
+}
+
+.prow--running {
+  background: var(--navy-soft);
+}
+.prow--failed {
+  background: var(--red-soft);
+}
+.prow--skipped {
+  opacity: 0.62;
+}
+
+.prow__body {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+
+.prow__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.prow__time {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  font-variant-numeric: tabular-nums;
+  flex: none;
+}
+
+.prow__detail {
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.prow__detail--bad {
+  color: var(--red);
+  font-weight: 600;
+}
+
+.sicon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  font-size: 11px;
+  font-weight: 700;
+  margin-top: 2px;
+}
+
+.sicon--ok {
+  background: var(--green);
+  color: #fff;
+}
+.sicon--run {
+  background: var(--navy);
+  color: #fff;
+}
+.sicon--bad {
+  background: var(--red);
+  color: #fff;
+}
+.sicon--wait {
+  background: var(--surface-2);
+  color: var(--ink-3);
+  border: 1px solid var(--line-strong);
+}
+.sicon--skip {
+  background: var(--grey-soft);
+  color: var(--grey);
+  border: 1px solid var(--grey-line);
+}
+
+.card--bad {
+  border-color: var(--red-line);
+  background: var(--red-soft);
+}
+
+.success {
+  border: 1px solid var(--green-line);
+  background: var(--green-soft);
+  border-radius: var(--radius);
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.success__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 17px;
+  color: var(--green);
+}
+
+.success__url code {
+  display: block;
+  background: var(--surface);
+  border: 1px solid var(--green-line);
+  border-radius: var(--radius-sm);
+  padding: 10px 13px;
+  font-size: 14px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow-x: auto;
+}
+
+.success__acts {
+  display: flex;
+  gap: 10px;
+}
+
+/* ===========================================================================
+   MODAL
+   =========================================================================== */
+
+.modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(22, 32, 46, 0.45);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+  z-index: 50;
+}
+
+.modal__box {
+  background: var(--surface);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+  padding: 22px 24px;
+  width: 100%;
+  max-width: 430px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.modal__acts {
+  display: flex;
+  gap: 10px;
+  justify-content: flex-end;
+}
+
+/* ===========================================================================
+   TABS
+   =========================================================================== */
+
+.tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); }
+.tab {
+  background: none; border: none; border-bottom: 2px solid transparent;
+  padding: 9px 16px; font: inherit; font-size: 14.5px; font-weight: 600;
+  color: var(--ink-2); cursor: pointer;
+}
+.tab:hover { color: var(--ink); background: var(--surface-2); }
+.tab--on { color: var(--navy); border-bottom-color: var(--navy); }
+.tabbody { display: flex; flex-direction: column; gap: 18px; }
+
+.ovgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 14px; }
+
+.kv { display: flex; justify-content: space-between; gap: 12px; font-size: 14px;
+      border-top: 1px solid var(--line); padding-top: 7px; }
+.kv span { color: var(--ink-3); }
+
+.endpoint { display: flex; align-items: flex-start; gap: 10px; }
+.endpoint > code, .endpoint > pre { flex: 1; min-width: 0; }
+.endpoint > code {
+  background: var(--surface-2); border: 1px solid var(--line); border-radius: var(--radius-sm);
+  padding: 9px 12px; overflow-x: auto; white-space: nowrap; font-size: 13px;
+}
+
+/* --- quota bars ----------------------------------------------------------- */
+.bars { display: flex; flex-direction: column; gap: 11px; }
+.bar__head { display: flex; justify-content: space-between; font-size: 13px; margin-bottom: 4px; }
+.bar__num { font-family: var(--font-mono); font-size: 12px; color: var(--ink-3);
+            font-variant-numeric: tabular-nums; }
+.bar__track { height: 8px; background: var(--surface-2); border: 1px solid var(--line);
+              border-radius: 20px; overflow: hidden; }
+.bar__fill { height: 100%; background: var(--navy); border-radius: 20px; }
+/* Red only at the ceiling: a full quota is a real constraint, not a deviation. */
+.bar__fill--full { background: var(--red); }
+
+/* --- days ring ------------------------------------------------------------ */
+.ring { display: flex; align-items: center; gap: 14px; position: relative; }
+.ring svg { flex: none; }
+.ring__track { fill: none; stroke: var(--surface-2); stroke-width: 9; }
+.ring__fill { fill: none; stroke: var(--green); stroke-width: 9; stroke-linecap: round; }
+.ring__fill--low { stroke: var(--red); }
+.ring__mid { position: absolute; left: 0; width: 88px; text-align: center;
+             display: flex; flex-direction: column; line-height: 1.1; }
+.ring__mid b { font-size: 22px; color: var(--navy); }
+.ring__mid span { font-size: 11px; color: var(--ink-3); }
+.ring__side { flex: 1; }
+
+/* --- playground ----------------------------------------------------------- */
+.pg { display: flex; flex-direction: column; gap: 14px; }
+.pg__panes { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 14px; }
+.pg__json {
+  font-family: var(--font-mono); font-size: 12.5px; line-height: 1.6;
+  background: #101922; color: #dce6f0; border: 1px solid #2b3947;
+  border-radius: var(--radius-sm); padding: 12px 14px; width: 100%;
+  overflow: auto; max-height: 320px; resize: vertical;
+}
+.pg__json--out { margin: 0; white-space: pre-wrap; word-break: break-word; }
+/* The global `code` rule paints a light chip background, which is right in prose
+   and wrong inside a dark pane — without this the response renders as pale boxes
+   on near-black. Same reset the .yaml block needs, for the same reason. */
+.pg__json code {
+  background: none; border: none; padding: 0; font-size: inherit; color: inherit;
+}
+.pg__compose { display: flex; gap: 10px; }
+.pg__compose input { flex: 1; font-family: inherit; font-size: 14.5px; padding: 9px 12px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm); background: var(--surface); }
+
+.chat { display: flex; flex-direction: column; gap: 10px; background: var(--surface);
+        border: 1px solid var(--line); border-radius: var(--radius); padding: 16px;
+        min-height: 220px; max-height: 460px; overflow-y: auto; }
+.bubble { max-width: 78%; padding: 9px 13px; border-radius: 10px; display: flex;
+          flex-direction: column; gap: 3px; }
+.bubble--user { align-self: flex-end; background: var(--navy-soft); border: 1px solid var(--navy-line); }
+.bubble--assistant { align-self: flex-start; background: var(--surface-2); border: 1px solid var(--line); }
+.bubble__who { font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em; color: var(--ink-3); }
+.bubble__text { white-space: pre-wrap; font-size: 14.5px; }
+.lat { font-family: var(--font-mono); font-size: 11px; color: var(--ink-3); }
+/* Amber: a cold start is a consequence of a local shortcut people were warned about. */
+.lat--cold { color: var(--amber); font-weight: 600; }
+
+/* --- events --------------------------------------------------------------- */
+.evlist { display: flex; flex-direction: column; gap: 1px; background: var(--line);
+          border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+          max-height: 520px; overflow-y: auto; }
+.ev { display: grid; grid-template-columns: 132px 1fr; gap: 12px; background: var(--surface);
+      padding: 7px 13px; font-size: 13px; }
+.ev__src { font-family: var(--font-mono); font-size: 11px; color: var(--navy); }
+.ev--cluster .ev__src { color: var(--ink-3); }
+.ev__text { font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap;
+            word-break: break-word; color: var(--ink-2); }
+
+.toast { background: var(--green-soft); border: 1px solid var(--green-line);
+         color: var(--green); border-radius: var(--radius-sm); padding: 9px 13px; font-size: 13.5px; }
+
+/* --- deviations panel ------------------------------------------------------ */
+.topbar__right { display: flex; align-items: center; gap: 14px; }
+.topbar__notes {
+  background: rgba(255,255,255,.10); border: 1px solid rgba(255,255,255,.24);
+  color: #fff; font: inherit; font-size: 12.5px; padding: 4px 11px;
+  border-radius: 20px; cursor: pointer; white-space: nowrap;
+}
+.topbar__notes:hover { background: rgba(255,255,255,.18); }
+.linkbtn {
+  background: none; border: none; padding: 0; font: inherit; color: inherit;
+  text-decoration: underline; cursor: pointer; font-weight: 600;
+}
+.modal__box--wide { max-width: 720px; max-height: 86vh; overflow-y: auto; }
+.devhead { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.devlist { display: flex; flex-direction: column; gap: 1px; background: var(--line);
+           border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.dev { background: var(--surface); padding: 13px 16px; display: flex;
+       flex-direction: column; gap: 8px; }
+.dev__area { font-weight: 700; color: var(--navy); font-size: 14.5px;
+             display: flex; align-items: center; gap: 9px; }
+.dev__cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+@media (max-width: 620px) { .dev__cols { grid-template-columns: 1fr; } }
+.dev__lbl { font-size: 10.5px; text-transform: uppercase; letter-spacing: .08em;
+            color: var(--ink-3); display: block; margin-bottom: 2px; }
+/* Amber on the left column only: "Here" is the deviation, "On the platform" is
+   how it should be. Colouring both would say they are equally provisional. */
+.dev__cols > div:first-child { border-left: 3px solid var(--amber-line);
+                               padding-left: 10px; background: var(--amber-soft);
+                               border-radius: 0 3px 3px 0; padding-block: 6px; }
+.dev__cols > div:first-child .dev__lbl { color: var(--amber); }
+.dev__why { border-top: 1px dashed var(--line); padding-top: 7px; font-style: italic; }
+
+/* ===========================================================================
+   RAG STACK — UPLOAD, SOURCES, KNOWLEDGE BASE
+   ===========================================================================
+   Everything below serves the second template. It reuses the tokens at the top
+   of this file rather than introducing colours: the drop zone is navy-soft when
+   active because it is structure, a strong source is green because it is a good
+   result, a weak one is grey rather than red because a low similarity score is
+   not a fault — it is a fact about the question.
+
+   NOTHING HERE IS AMBER. Amber means "this is not how production works", and
+   none of these components is a local shortcut. The two RAG deviations that ARE
+   local — documents copied in by hand, and a 0.5B model — are declared in
+   deviations.js and rendered by the panel that already exists for them.
+   =========================================================================== */
+
+/* --- read-only fields: a decision already made, shown as a statement ------ */
+.readonly {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 9px 12px;
+  background: var(--surface-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+.readonly__value {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.readonly__note {
+  font-size: 12px;
+  color: var(--ink-3);
+}
+
+.checkline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 400;
+}
+
+/* --- the drop zone -------------------------------------------------------- */
+.drop {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 26px 18px;
+  text-align: center;
+  border: 2px dashed var(--line-strong);
+  border-radius: 10px;
+  background: var(--surface-2);
+  cursor: pointer;
+  transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.drop:hover,
+.drop:focus-visible {
+  border-color: var(--navy);
+  background: var(--navy-soft);
+}
+
+/* The drag state has to be unmistakable — a PI holding a file over the window
+   is asking "will this land here?" and a subtle change does not answer it. */
+.drop--over {
+  border-color: var(--navy);
+  border-style: solid;
+  background: var(--navy-soft);
+}
+
+.drop--busy {
+  cursor: progress;
+  opacity: 0.75;
+}
+
+.drop b {
+  color: var(--ink);
+  font-size: 14px;
+}
+
+/* --- the file list -------------------------------------------------------- */
+.filelist {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.filelist__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 12px;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--line);
+  font-size: 13px;
+}
+
+.filerow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.filerow:last-child {
+  border-bottom: 0;
+}
+
+.filerow__name {
+  flex: 1;
+  /* The token, not a fresh stack — a filename is shown in the same face as
+     every other literal in this console (chunk ids, endpoints, project ids). */
+  font-family: var(--font-mono);
+  font-size: 12.5px;
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+
+.filerow__size {
+  flex: 0 0 auto;
+}
+
+.filerow__x {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--ink-2);
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.filerow__x:hover:not(:disabled) {
+  border-color: var(--red-line);
+  background: var(--red-soft);
+  color: var(--red);
+}
+
+.filerow__x:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* --- the sources panel ---------------------------------------------------- */
+/* Indented under the answer it belongs to, so the relationship is structural
+   rather than something a caption has to assert. */
+.qa {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 18px;
+}
+
+.qa__meta {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+
+/* The honest refusal is set apart, because it is a RESULT and not a failure.
+   Grey, never red: the system worked exactly as designed. */
+.bubble__text--refusal {
+  color: var(--ink-2);
+  font-style: italic;
+}
+
+.sources {
+  margin-left: 18px;
+  border-left: 2px solid var(--line);
+  padding-left: 12px;
+}
+
+.sources__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 6px;
+  font-size: 13px;
+}
+
+.src {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  margin-bottom: 5px;
+  background: var(--surface);
+  overflow: hidden;
+}
+
+/* Bands, not a gradient — see the comment on Source in Playground.jsx. The
+   left edge carries the judgement so the row itself stays readable. */
+.src--strong {
+  border-left: 3px solid var(--green);
+}
+
+.src--weak {
+  border-left: 3px solid var(--line-strong);
+}
+
+.src__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+}
+
+.src__head:hover {
+  background: var(--surface-2);
+}
+
+.src__n {
+  flex: 0 0 auto;
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  border-radius: 4px;
+  background: var(--navy-soft);
+  color: var(--navy);
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.src__file {
+  flex: 1;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.src__chunk {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--ink-3);
+  background: var(--surface-2);
+  padding: 1px 6px;
+  border-radius: 4px;
+}
+
+.src__score {
+  flex: 0 0 auto;
+  font-family: var(--font-mono);
+  /* Tabular figures so a column of scores lines up and can be compared by
+     eye — the whole reason the number is shown rather than only a colour. */
+  font-variant-numeric: tabular-nums;
+  font-size: 12px;
+  color: var(--ink-2);
+}
+
+.src__text {
+  padding: 9px 12px 11px;
+  border-top: 1px solid var(--line);
+  background: var(--surface-2);
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--ink-2);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+/* --- knowledge base card -------------------------------------------------- */
+.kbpills {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+/* --- multi-select: several of a set, in the order they were picked -------- */
+/* Buttons rather than a native <select multiple>, because the ORDER is the
+   answer here and a native control returns DOM order. See MultiSelectField. */
+.multi {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.multi__opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  border: 1px solid var(--line-strong);
+  border-radius: 999px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 13px;
+  color: var(--ink-2);
+  cursor: pointer;
+}
+
+.multi__opt:hover {
+  border-color: var(--navy);
+  color: var(--ink);
+}
+
+.multi__opt--on {
+  border-color: var(--navy);
+  background: var(--navy-soft);
+  color: var(--navy);
+  font-weight: 600;
+}
+
+/* The position, not a tick: which column is first matters to the model. */
+.multi__n {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  background: var(--navy);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+/* ===========================================================================
+   BATCH RUN RESULTS — the project page of a run-shaped template
+   =========================================================================== */
+/* Four numbers the PI reads first, in filled tiles so state is carried by a
+   region rather than by coloured text alone (CLAUDE.md §6, design tokens). */
+.runstats {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 10px;
+}
+.runstats > div {
+  background: var(--navy-soft);
+  border: 1px solid var(--navy-line);
+  border-radius: var(--radius);
+  padding: 10px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.runstats span { font-size: 12px; color: var(--ink-2); }
+.runstats b { font-size: 20px; color: var(--navy); font-variant-numeric: tabular-nums; }
+.runstats > .runstats--bad { background: var(--red-soft); border-color: var(--red-line); }
+.runstats > .runstats--bad b { color: var(--red); }
+
+/* Tall enough to scan fifty rows without the page itself becoming the table. */
+.runtable { max-height: 420px; overflow-y: auto; }
+.runtable td { font-variant-numeric: tabular-nums; }
+.runtable thead th { position: sticky; top: 0; background: var(--surface); }
+
+.rundl { display: flex; flex-wrap: wrap; gap: 8px; }

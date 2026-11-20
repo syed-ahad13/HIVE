@@ -1,0 +1,220 @@
+# ===========================================================================
+# CURATED SERVING RUNTIME — hive-llama-cpp-rag  (gguf on CPU, 4096-token context)
+# ===========================================================================
+# ONE MORE ENTRY IN THE PLATFORM'S RUNTIME MENU, added by the ADR-11 curation
+# flow (docs/catalog-curation.md). A tenant cannot author a ClusterServingRuntime
+# — it is a cluster-scoped object on the host — so the set of runtimes a PI may
+# select from is chosen by the platform team, in a commit, exactly like the model
+# list in templates/catalog/models.yaml. This file is one such commit.
+#
+# ---------------------------------------------------------------------------
+# WHY A SECOND llama.cpp RUNTIME AND NOT A LARGER CONTEXT ON THE FIRST
+# ---------------------------------------------------------------------------
+# RAG's whole mechanism is stuffing retrieved passages into the prompt. With
+# topK=3 and a 600-character chunk ceiling the context carries ~1,800 characters
+# of retrieved text plus the system message, the question and the answer — which
+# is comfortably past the 2,048-token default a small chat runtime is usually
+# pinned at, and a runtime whose context is too small does not fail loudly. It
+# TRUNCATES, silently, from the front — which is where the retrieved passages
+# are. The model then answers from a fragment of its evidence and sounds exactly
+# as confident as it would have with all of it.
+#
+# So the RAG template pins a runtime whose context is declared, not inherited,
+# and the number is in this file where a reviewer can see it (CLAUDE.md §6, "the
+# catalogue is DATA").
+#
+# It is a SEPARATE runtime rather than an edit to a shared one because a serving
+# runtime is a shared platform object: widening the context of the runtime every
+# other tenant's chat model uses would raise every tenant's memory floor to pay
+# for one template's requirement.
+#
+# ---------------------------------------------------------------------------
+# !! REPOSITORY STATE, STATED PLAINLY !!
+# ---------------------------------------------------------------------------
+# There is NO `hive-llama-cpp` in this repository, and there was none when this
+# file was written: `host/serving/runtimes/llama-cpp.yaml` does not exist,
+# `kubectl get clusterservingruntime` lists the 14 upstream KServe runtimes and
+# nothing else, and none of them declares `gguf`. Step 9b was never carried out
+# here — the same finding docs/studio-real-proof.md §7 records and the reason
+# `qwen2.5-0.5b-instruct-q4` is still flagged UNVERIFIED in models.yaml.
+#
+# This file is therefore authored from scratch rather than copied-and-widened
+# from a base runtime, and every value below was verified against the tool or
+# the cluster rather than recalled:
+#
+#   image + arm64      `docker manifest inspect ghcr.io/ggml-org/llama.cpp:server`
+#                      -> linux/amd64, linux/arm64, linux/s390x. Runs NATIVELY on
+#                      Apple Silicon; no Rosetta row needed in DEVIATIONS.md.
+#   the flags          `docker run --rm ghcr.io/ggml-org/llama.cpp:server --help`
+#                      -> `-c, --ctx-size N`, `-m, --model FNAME`,
+#                         `-a, --alias STRING`, `--host`, `--port` (default 8080)
+#   /bin/sh exists     confirmed by running it (the image is Ubuntu-based), which
+#                      is what makes the glob below possible
+#   arg handling       KServe uses a runtime's `args` VERBATIM — it renders
+#                      `{{.Name}}` and appends nothing of its own. Verified by
+#                      reading the installed kserve-sklearnserver, whose three
+#                      args are exactly what its pod runs.
+#   $0 from args       upstream's own kserve-huggingfaceserver-multinode runs
+#                      `bash -c '<script> $0 $@'` with templated `args`, so
+#                      passing the rendered name into a shell script positionally
+#                      is the pattern KServe itself uses — not an invention here.
+#
+# When Step 9b is eventually done, the sibling `hive-llama-cpp` should be
+# authored beside this file and the two should differ ONLY in `--ctx-size` and
+# the memory allowance. Nothing else here is RAG-specific.
+# ===========================================================================
+apiVersion: serving.kserve.io/v1alpha1
+kind: ClusterServingRuntime
+metadata:
+  name: hive-llama-cpp-rag
+  labels:
+    hive.ksl/curated: "true"
+    # Which curation decision this object came from, so `kubectl get
+    # clusterservingruntime -l hive.ksl/curated=true` answers "what has the
+    # platform team added on top of upstream?" without reading 14 manifests.
+    hive.ksl/runtime-family: llama-cpp
+  annotations:
+    serving.kserve.io/server-type: llama-cpp
+    hive.ksl/context-tokens: "4096"
+    hive.ksl/curation-record: docs/catalog-curation.md
+spec:
+  annotations:
+    prometheus.kserve.io/path: /metrics
+    prometheus.kserve.io/port: "8080"
+
+  # ---------------------------------------------------------------------
+  # WHAT SELECTS THIS RUNTIME
+  # ---------------------------------------------------------------------
+  # `autoSelect: false` IS DELIBERATE AND IS THE WHOLE POINT OF THE SPLIT.
+  # A `gguf` InferenceService must name the runtime it wants; it must never be
+  # resolved from the format alone. Once `hive-llama-cpp` also exists, two
+  # runtimes will declare `gguf`, and auto-selection between them would hand a
+  # 2,048-token context to a RAG service on a priority tie-break — the silent
+  # truncation this runtime exists to prevent, chosen for you.
+  #
+  # templates/catalog/models.yaml pins the runtime per model entry, which is why
+  # the catalogue can make this choice explicitly and a tenant cannot.
+  supportedModelFormats:
+    - name: gguf
+      autoSelect: false
+
+  # llama-server speaks the OpenAI-compatible surface (/v1/chat/completions), not
+  # KServe's V1 or V2 predict protocol. `v1` is declared because KServe requires
+  # a protocol version and uses it only to choose between competing runtimes for
+  # the same format — a decision `autoSelect: false` has already taken away.
+  # THE CATALOGUE IS WHERE THE REAL ANSWER LIVES: models.yaml gives this model
+  # `interface: chat` and `invokePath: /v1/chat/completions`, and that is what the
+  # playground and the RAG service actually call.
+  protocolVersions:
+    - v1
+
+  containers:
+    - name: kserve-container
+      # Pinned by DIGEST, not by the floating `:server` tag. `:server` is
+      # rebuilt on every llama.cpp release, so a tag-pinned runtime would change
+      # what a tenant is running without any commit in this repository — and the
+      # context arithmetic above is only true of a build somebody looked at.
+      # Digest read from the pulled image with `docker inspect --format
+      # '{{index .RepoDigests 0}}'` on 2026-08-31.
+      image: ghcr.io/ggml-org/llama.cpp@sha256:c3728b9ba0c4c427770eec092fdb1bab1e86e811d578b27440771b8b3207f2c7
+
+      # ---------------------------------------------------------------
+      # WHY A SHELL, AND WHY A GLOB
+      # ---------------------------------------------------------------
+      # `llama-server` takes `-m <FILE>`; it has no "serve whatever gguf is in
+      # this directory" mode. But KServe mounts `pvc://models/llm` as a
+      # DIRECTORY at /mnt/models, and the filename inside it comes from the
+      # basename of the catalogue entry's `seedUrl` — so the runtime cannot know
+      # it, and hard-coding one model's filename into a shared runtime would make
+      # the runtime serve exactly one model.
+      #
+      # So it globs for exactly one *.gguf, which is precisely what
+      # kserve-sklearnserver does with /mnt/models and *.joblib (see the note in
+      # models.yaml). Two or more .gguf files in the directory is a seeding
+      # mistake and the shell says so and exits non-zero rather than picking one.
+      #
+      # `exec` matters: without it llama-server runs as PID 2 under a shell that
+      # ignores SIGTERM, and Knative's scale-to-zero would wait out the full
+      # termination grace period on every scale-down.
+      command:
+        - /bin/sh
+        - -c
+        - |
+          set -eu
+          count=$(ls -1 /mnt/models/*.gguf 2>/dev/null | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "hive-llama-cpp-rag: no .gguf file in /mnt/models" >&2
+            ls -la /mnt/models >&2 || true
+            exit 1
+          fi
+          if [ "$count" -gt 1 ]; then
+            echo "hive-llama-cpp-rag: expected exactly one .gguf in /mnt/models, found $count" >&2
+            ls -1 /mnt/models/*.gguf >&2
+            exit 1
+          fi
+          model=$(ls -1 /mnt/models/*.gguf)
+          echo "hive-llama-cpp-rag: serving $model as '$0' with a 4096-token context"
+          exec /app/llama-server \
+            --model "$model" \
+            --alias "$0" \
+            --host 0.0.0.0 \
+            --port 8080 \
+            --ctx-size 4096 \
+            --threads -1 \
+            --no-warmup
+
+      # THE ONE TEMPLATED VALUE, and it is in `args` rather than in the script
+      # above ON PURPOSE. `{{.Name}}` is rendered by KServe from the
+      # InferenceService's name; `args` is the field upstream's own runtimes
+      # template (kserve-sklearnserver's `--model_name={{.Name}}`), so putting it
+      # here does not depend on whether the controller also walks `command`.
+      # `sh -c '<script>' NAME` makes NAME the script's `$0` — the same
+      # positional hand-off kserve-huggingfaceserver-multinode uses.
+      #
+      # It becomes llama-server's `--alias`, which is the name echoed back in the
+      # OpenAI-compatible response's `model` field. It matters because it makes a
+      # reply traceable to a project: an answer from `p-coral`'s endpoint says
+      # `"model": "coral"`, not `"model": "unknown"`.
+      args:
+        - "{{.Name}}"
+
+      # ---------------------------------------------------------------
+      # RESOURCES — the "modest extra memory" a 4096 context costs
+      # ---------------------------------------------------------------
+      # Weights (469MiB for Qwen 2.5 0.5B at q4_k_m — measured, not estimated:
+      # the catalogue's seedUrl was fetched and returned 491,400,032 bytes) plus
+      # the KV cache, which is what
+      # scales with the context: doubling from 2048 to 4096 doubles it. 3Gi is
+      # roomy for this model and still leaves the tenant quota (limits.memory
+      # 16Gi) enough room for Qdrant, the RAG service, the queue-proxy sidecar
+      # and the vCluster control plane, all of which live in the same namespace.
+      #
+      # `--threads -1` above lets llama.cpp size its thread pool from the cgroup,
+      # so the CPU limit here is the real control over how much of the laptop one
+      # tenant's answer can take.
+      resources:
+        requests:
+          cpu: "500m"
+          memory: 1Gi
+        limits:
+          cpu: "2"
+          memory: 3Gi
+
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        privileged: false
+        # runAsUser IS REQUIRED HERE and kserve-sklearnserver does not need it.
+        # That image declares a non-root USER of its own, so `runAsNonRoot: true`
+        # alone is satisfiable; `ghcr.io/ggml-org/llama.cpp` declares no USER
+        # (verified with `docker inspect --format '{{.Config.User}}'` -> empty),
+        # so the same stanza without an explicit uid would be rejected at
+        # admission with "container has runAsNonRoot and image will run as root".
+        #
+        # Nothing here writes: the GGUF is read from a PVC the seed Job left
+        # world-readable (0644), and llama-server's only output is the HTTP
+        # response.
+        runAsNonRoot: true
+        runAsUser: 1000

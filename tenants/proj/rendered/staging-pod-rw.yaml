@@ -1,0 +1,122 @@
+# ===========================================================================
+# STUDIO FRAGMENT — STAGING POD (used BOTH ways)
+# Rendered by studio/backend into tenants/$project/rendered/staging-pod.yaml
+# ===========================================================================
+# A THROWAWAY POD WHOSE ONLY PURPOSE IS TO BE COPIED INTO OR OUT OF. It mounts
+# the project's `scratch` PVC, sleeps, and is deleted by the same pipeline step
+# that created it. It runs no code of ours and outlives the step by nothing.
+#
+# ---------------------------------------------------------------------------
+# ONE FRAGMENT, TWO STEPS — AND WHY THAT IS NOT A SHORTCUT
+# ---------------------------------------------------------------------------
+# `dataset-upload` renders it to push a file IN; `collect-results` renders it to
+# pull files OUT. Both map to this fragment (RESOURCE_TO_FRAGMENT in
+# app/catalog.py) because they are the same problem:
+#
+#   A PersistentVolumeClaim is not readable or writable from outside the
+#   cluster. `kubectl cp` copies into and out of a CONTAINER, not a volume, so
+#   moving a file in either direction means having a running container with
+#   `scratch` mounted for as long as the copy takes.
+#
+# Writing it twice would be two copies of the same trap and two places to fix it.
+# The differences that matter are parameters:
+#
+#   $stage_name    so a rendered manifest is traceable to the step that made it
+#   $stage_mode    ro | rw — see the access-mode note below
+#
+# ---------------------------------------------------------------------------
+# `kubectl cp` NEEDS `tar` IN THE TARGET CONTAINER
+# ---------------------------------------------------------------------------
+# This is the trap in this file. `kubectl cp` is implemented as
+# `tar cf - <src> | kubectl exec -i -- tar xf - -C <dst>`; a container without
+# `tar` on its PATH fails with "tar: not found" and an exit status that reads
+# like a permissions problem.
+#
+# busybox has a `tar` applet — VERIFIED by running
+# `docker run --rm busybox:1.37 tar --help`, not assumed — and
+# `docker manifest inspect busybox:1.37` lists linux/arm64, so it runs natively
+# on Apple Silicon.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT
+# ---------------------------------------------------------------------------
+# Two passes: `#@if <key>=<value>` / `#@end` first, then string.Template
+# substitution. A LITERAL dollar sign must be written `$`.
+#
+#   Facts:        stage_mode = ro | rw
+#   Placeholders: $project, $stage_name
+# ===========================================================================
+apiVersion: v1
+kind: Pod
+metadata:
+  name: proj-stage-in
+  namespace: p-proj
+  labels:
+    hive.ksl/project: proj
+    hive.ksl/role: staging
+    hive.ksl/template: studio-batch
+spec:
+  # `Never`: if this pod dies the step has already failed and a restarted
+  # sleeper would just sit there looking healthy.
+  restartPolicy: Never
+  # Deleted by the step that created it. This is the backstop for the case where
+  # the BFF is killed mid-step: without it, a `sleep` pod would hold a
+  # ReadWriteOnce volume for ever and every later run would find it unavailable.
+  activeDeadlineSeconds: 900
+  containers:
+    - name: stage
+      image: busybox:1.37
+      # `sleep` and nothing else. The work is done from outside by `kubectl cp`;
+      # this container exists to be a mount point with a shell.
+      command: ["sh", "-c", "sleep 900"]
+      volumeMounts:
+        # PUSHING A DATASET IN. Read-write, because kubectl cp writes here.
+        - name: scratch
+          mountPath: /mnt/scratch
+        # ---------------------------------------------------------------
+        # `models` IS MOUNTED HERE AND NEVER READ. IT IS A SCHEDULING FENCE.
+        # ---------------------------------------------------------------
+        # This pod has no use for the models volume. It is mounted so the
+        # SCHEDULER is forced to place this pod on the node `models` is already
+        # bound to — which in turn pins `scratch` to that same node.
+        #
+        # THE BUG THIS PREVENTS, which the RAG stack hit for real: local-path is
+        # ReadWriteOnce and pins a volume to whichever node first mounts it. The
+        # seed Job pins `models`. A staging pod mounting only `scratch` is free
+        # to land on the OTHER worker and pin `scratch` there. The batch Job
+        # mounts BOTH, so no single node can satisfy it:
+        #
+        #   0/3 nodes are available: 1 node(s) had untolerated taint(s),
+        #   2 node(s) didn't match PersistentVolume's node affinity.
+        #
+        # The pod then stays Pending for ever and the step times out with an
+        # EMPTY log, because nothing ever ran. An empty log after a long wait is
+        # the signature of this, not of a slow program. It is a coin toss, so it
+        # works until it does not.
+        #
+        # At migration this mount disappears: WekaFS is ReadWriteMany, nothing is
+        # pinned to a node, and there is no fence to build.
+        - name: models
+          mountPath: /mnt/models
+          readOnly: true
+      # Tiny, and it means it: this container runs `sleep`. The namespace's
+      # LimitRange would default it to 500m/512Mi, which would be an order of
+      # magnitude more than a sleeping busybox needs and would count against the
+      # tenant's ceiling while the copy runs.
+      resources:
+        requests:
+          cpu: 10m
+          memory: 16Mi
+        limits:
+          cpu: 100m
+          memory: 64Mi
+  volumes:
+    - name: scratch
+      persistentVolumeClaim:
+        claimName: scratch
+    # Present only to pin this pod to the node `models` lives on, so that
+    # `scratch` binds there too. See the volumeMounts note above.
+    - name: models
+      persistentVolumeClaim:
+        claimName: models
+        readOnly: true

@@ -1,0 +1,291 @@
+# ===========================================================================
+# HIVE STUDIO — THE CURATED MODEL LIST
+# ===========================================================================
+# This file IS the governance boundary. It is a CLOSED list: the deploy wizard's
+# `model` parameter is an enum sourced from here, and a PI cannot type a URL of
+# their own. That is deliberate and it mirrors ADR-11 — a menu, not a kitchen.
+#
+# What the closed list buys, concretely:
+#
+#   * Nothing is fetched at deploy time that a platform engineer has not already
+#     reviewed. `seedUrl` is the ONLY network egress the provisioning pipeline
+#     performs, and every possible value of it is in this file, in git, in a diff.
+#   * `runtime` and `modelFormat` are chosen by the platform, not the tenant, so a
+#     tenant cannot pick a serving runtime whose image does not exist, does not
+#     publish linux/arm64, or has not been vetted.
+#   * The set of things a tenant can deploy is reviewable by reading one file.
+#
+# Adding a model is therefore a deliberate, reviewed act: a commit here, not a
+# support ticket and not a text box in the UI.
+#
+# ---------------------------------------------------------------------------
+# FIELD CONTRACT
+# ---------------------------------------------------------------------------
+#   id              stable machine key. Referenced by the wizard's `model` enum and
+#                   recorded in the Studio registry as the deployment's intent.
+#                   NEVER reuse or repurpose an id — it is what history points at.
+#   displayName     what the PI reads in the catalogue. User-side language.
+#   interface       how the endpoint is TALKED TO, which is what the playground
+#                   needs to know in order to render itself:
+#                     chat        OpenAI-compatible /v1/chat/completions
+#                     predict-v1  KServe V1 predict, {"instances": [...]}
+#                     embed       NOT AN ENDPOINT AT ALL — see the embedding
+#                                 section at the foot of this file. An `embed`
+#                                 entry is a library model loaded IN-PROCESS by
+#                                 the RAG toolkit, so it has no runtime, no
+#                                 modelFormat, no invokePath and no sampleInput,
+#                                 and declares `provider`/`fastembedName`/`dims`/
+#                                 `distance` instead. The loader enforces that
+#                                 split per interface (app/catalog.py), so a chat
+#                                 entry still cannot omit its seedUrl.
+#   runtime         the ClusterServingRuntime name to pin, or "" to let KServe
+#                   resolve a runtime from `modelFormat` alone. Empty string is a
+#                   MEANINGFUL value, not a missing one — see sklearn-iris below.
+#   modelFormat     goes to spec.predictor.model.modelFormat.name.
+#   storageSubpath  directory UNDER the tenant's `models` PVC root that the seed Job
+#                   writes into, and which the InferenceService then mounts. Empty
+#                   string means the claim ROOT. This field is load-bearing and the
+#                   reason is in the storageUri note below — read it before editing.
+#   seedUrl         the single HTTPS GET the model-seed Job performs. Must be a
+#                   stable, publicly reachable, versioned artefact.
+#   invokePath      HTTP path the playground posts to. `{name}` is substituted with
+#                   the project name at call time (KServe V1 embeds the model name
+#                   in the path; the OpenAI-compatible surface does not).
+#   sampleInput     a known-good request body, so the playground has something to
+#                   put in the box before the PI has typed anything.
+#
+# --- `embed` entries only ---------------------------------------------------
+#   provider        WHO loads it. Today only `fastembed`, which runs ONNX in the
+#                   ingestion Job's and the RAG service's own process. This is a
+#                   governance-relevant field: it says the model is executed
+#                   inside a container this repository builds, not served by a
+#                   runtime the platform installed.
+#   fastembedName   the EXACT id from fastembed's supported-models list. It is
+#                   not a display name and not a Hugging Face URL — fastembed
+#                   matches it case-insensitively against its own registry and
+#                   raises if it is not there.
+#   dims            the vector width. It MUST match the model, because the Qdrant
+#                   collection is created with this number and a mismatch is
+#                   rejected at upsert time, after the whole corpus has been read.
+#   distance        Qdrant's similarity metric, spelled as Qdrant spells it
+#                   (`Cosine`, `Dot`, `Euclid`).
+#
+# ---------------------------------------------------------------------------
+# HOW storageSubpath BECOMES storageUri — AND WHY IT IS NOT STRING CONCATENATION
+# ---------------------------------------------------------------------------
+# `pvc://` is NOT downloaded by a storage-initializer. KServe mounts the claim at
+# /mnt/models directly, and anything after the claim name becomes a **subPath**,
+# which must be a directory (KServe v0.20 storage_initializer_injector.go). So:
+#
+#   storageSubpath ""     ->  storageUri "pvc://models"       (claim ROOT)
+#   storageSubpath "llm"  ->  storageUri "pvc://models/llm"   (subPath "llm")
+#
+# `"pvc://models/" + ""` would yield `pvc://models/` — a trailing slash that is NOT
+# the proven-working form used by tenants/inf-101 and tenants/inf-103. The renderer
+# therefore JOINS these, it does not concatenate them, and the template fragment
+# takes the finished URI as a single placeholder. See
+# templates/catalog/inference-endpoint/resources/inference-service.yaml.tmpl.
+#
+# ===========================================================================
+
+apiVersion: studio.hive.ksl/v1
+kind: ModelCatalog
+metadata:
+  name: hive-studio-models
+  description: >-
+    The closed set of models a PI may deploy through HIVE Studio. Adding an entry
+    is a reviewed commit, never a runtime input.
+
+models:
+  # -------------------------------------------------------------------------
+  # !! UNVERIFIED ENTRY — READ THIS BEFORE RELYING ON IT !!
+  # -------------------------------------------------------------------------
+  # This entry was specified as reusing "the exact gguf URL used in Step 9b". THERE
+  # IS NO STEP 9B IN THIS REPOSITORY. Step 9 (commit bdd2b72, "T-AO and T-SZ
+  # archetype services live from inside vClusters") serves the sklearn iris model
+  # for BOTH archetypes — deliberately, because archetype behaviour was the
+  # deliverable rather than model realism (see the header of
+  # tenants/inf-101/legal-translation.yaml). Nothing in this repo mentions gguf,
+  # llama.cpp, or Qwen; `grep -rin "gguf\|llama\|qwen"` returns nothing.
+  #
+  # The seedUrl below is therefore the CANONICAL UPSTREAM Qwen release artefact,
+  # NOT a value recovered from prior work, and it has never been downloaded by
+  # anything in this repository. Two things must be confirmed before a PI is
+  # allowed to select this model:
+  #
+  #   1. THE URL RESOLVES. It has not been fetched from this machine. Some
+  #      Hugging Face repos require an accepted licence or a token, in which case
+  #      the anonymous GET the seed Job performs returns 401/403, not the file.
+  #
+  #   2. THE RUNTIME EXISTS. `hive-llama-cpp` is NOT one of the 14
+  #      ClusterServingRuntimes installed on the host
+  #      (host/serving/kserve/kserve-cluster-resources.yaml — the list is
+  #      kserve-autogluonserver, -huggingfaceserver, -huggingfaceserver-multinode,
+  #      -lgbserver, -mlserver, -paddleserver, -pmmlserver, -predictiveserver,
+  #      -sklearnserver, -tensorflow-serving, -torchserve, -tritonserver,
+  #      -vllmserver, -xgbserver). Nor is `gguf` a modelFormat any of them declares.
+  #      Selecting this model TODAY produces an InferenceService that cannot
+  #      schedule, because no runtime matches its format.
+  #
+  # It is kept in the catalogue because the chat interface is what the Studio
+  # playground is being built around and PI A's real workload is an LLM. It must
+  # not be marked selectable in the UI until a `hive-llama-cpp`
+  # ClusterServingRuntime is authored, committed under host/serving/kserve/, its
+  # arm64 availability confirmed per the CLAUDE.md working agreement, and its
+  # version recorded in VERSIONS.md.
+  - id: qwen2.5-0.5b-instruct-q4
+    displayName: "Qwen 2.5 0.5B Instruct (chat)"
+    interface: chat
+    # ---------------------------------------------------------------------
+    # POINTED AT THE RUNTIME THAT EXISTS (studio B1, 2026-09-15)
+    # ---------------------------------------------------------------------
+    # This entry pinned `hive-llama-cpp`, which was never authored — Step 9b was
+    # not carried out in this repository, and `kubectl get clusterservingruntime`
+    # has never listed it. The consequence was that the one chat model in the
+    # catalogue could not be deployed by ANY template: inference-endpoint failed
+    # its precondition, and batch-inference would have failed to resolve a
+    # runtime at all.
+    #
+    # `hive-llama-cpp-rag` is the curated gguf runtime that DOES exist, authored
+    # under the ADR-11 curation flow (docs/catalog-curation.md) and pinned by
+    # digest. Its only difference from the never-built `hive-llama-cpp` is a
+    # 4096-token context and slightly more memory — strictly more capable, and
+    # harmless for a batch run whose prompts are one row each.
+    #
+    # The `-rag` in the name is now a misnomer: it is simply the gguf runtime.
+    # Renaming it is a separate curation change with its own commit, not
+    # something to do silently here while fixing a broken pin.
+    runtime: hive-llama-cpp-rag
+    modelFormat: gguf
+    storageSubpath: llm
+    seedUrl: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+    invokePath: "/v1/chat/completions"
+    sampleInput:
+      model: qwen2.5-0.5b-instruct-q4
+      messages:
+        - role: user
+          content: "Summarise what a vCluster is in two sentences."
+      max_tokens: 128
+
+  # -------------------------------------------------------------------------
+  # The proven entry. This is the model Gate G1 and Gate G3 actually ran, end to
+  # end, through the one central KServe — so it is the honest default for any
+  # Studio deployment whose purpose is to exercise the PLATFORM rather than a model.
+  # -------------------------------------------------------------------------
+  # `runtime: ""` IS THE CORRECT VALUE, not an omission. KServe resolves a
+  # ClusterServingRuntime from `modelFormat: sklearn` on its own and selects
+  # kserve-sklearnserver, which publishes linux/arm64 and therefore runs natively on
+  # Apple Silicon (see DEVIATIONS.md — huggingfaceserver and mlserver do not).
+  # Pinning `runtime: kserve-sklearnserver` explicitly would work identically today
+  # and would break the day the platform renames or re-versions that runtime.
+  # Letting the format resolve it is the more portable of the two.
+  #
+  # `storageSubpath: ""` mounts the claim ROOT, giving storageUri "pvc://models" —
+  # byte-identical to the working form in tenants/inf-101/legal-translation.yaml and
+  # tenants/inf-103/species-classifier.yaml. The sklearn server globs /mnt/models as
+  # a DIRECTORY for exactly one .joblib/.pkl/.pickle file, so the root must contain
+  # model.joblib and nothing else that matches.
+  - id: sklearn-iris
+    displayName: "Iris classifier (demo, classic ML)"
+    interface: predict-v1
+    runtime: ""
+    modelFormat: sklearn
+    storageSubpath: ""
+    seedUrl: "https://storage.googleapis.com/kfserving-examples/models/sklearn/1.0/model/model.joblib"
+    # KServe V1 puts the model name in the path, and KServe names the model after
+    # the InferenceService — which Studio names after the project. `{name}` is
+    # substituted with the project name when the playground builds the request.
+    invokePath: "/v1/models/{name}:predict"
+    # Sepal/petal measurements of one iris. Known-good: this exact body returned
+    # {"predictions":[1]} in the Gate G1 smoke test (tests/iris-input.json).
+    sampleInput:
+      instances:
+        - [6.8, 2.8, 4.8, 1.4]
+    # What the three class indices mean. The model is KServe's canonical iris
+    # example, trained on scikit-learn's load_iris(), whose target_names are in
+    # exactly this order. Verified against a real batch run (2026-09-29): rows
+    # with petal 1.4 x 0.2 — textbook setosa — came back 0.
+    outputLabels:
+      "0": setosa
+      "1": versicolor
+      "2": virginica
+
+  # ===========================================================================
+  # EMBEDDINGS — A DIFFERENT KIND OF ENTRY, AND THE DIFFERENCE IS THE POINT
+  # ===========================================================================
+  # THIS MODEL IS NEVER DEPLOYED. It is not an InferenceService, it has no
+  # runtime, and nothing in the cluster serves it. It is loaded as a LIBRARY,
+  # in-process, by two containers this repository builds from
+  # studio/images/rag-toolkit/: the ingestion Job that indexes a corpus, and the
+  # RAG service that embeds each incoming question.
+  #
+  # That is a deliberate architectural decision (RAG design decision D3), and the
+  # reason is the tier quota. A second InferenceService for embeddings would:
+  #
+  #   * request a GPU it does not need, against a ceiling of one;
+  #   * consume one of the TWO `count/inferenceservices` a tenant is allowed,
+  #     leaving no room for the blue/green rollout that limit exists to permit;
+  #   * add a network hop and a cold start to every single question, on a service
+  #     whose whole job is to be fast enough to sit in front of another one.
+  #
+  # A 67MB ONNX model that runs on CPU in a few milliseconds does not deserve a
+  # Kubernetes service. Embedding in-process is not a local shortcut and does not
+  # belong in DEVIATIONS.md — it is what production should do too.
+  #
+  # ---------------------------------------------------------------------------
+  # WHERE THE BYTES COME FROM, AND WHY THIS IS STILL A CLOSED LIST
+  # ---------------------------------------------------------------------------
+  # `seedUrl` is empty because there is no URL to fetch: fastembed resolves
+  # `BAAI/bge-small-en-v1.5` to the Hugging Face repo `qdrant/bge-small-en-v1.5-onnx-q`
+  # and downloads it through huggingface_hub. THE EGRESS IS STILL CLOSED and
+  # still happens exactly once, in the model-seed Job, into the project's `models`
+  # PVC under `embed/` — never at query time. Both the ingestion Job and the RAG
+  # service mount that PVC READ-ONLY and load with `local_files_only=True`, so a
+  # container that somehow reached a network could not use it.
+  #
+  # The governance boundary is therefore unchanged in substance: the set of things
+  # that can be fetched is enumerated in this file, in git, in a diff. Only the
+  # NAME of the identifier changed — a repo id instead of an https URL — and the
+  # loader records which, so no reader has to infer it.
+  #
+  # ---------------------------------------------------------------------------
+  # VERIFIED, NOT RECALLED (2026-08-31)
+  # ---------------------------------------------------------------------------
+  # Read out of fastembed 0.8.0's own supported-models registry
+  # (`fastembed/text/onnx_embedding.py`), from the wheel on PyPI:
+  #
+  #     DenseModelDescription(
+  #         model="BAAI/bge-small-en-v1.5",
+  #         dim=384,
+  #         ...
+  #         sources=ModelSource(hf="qdrant/bge-small-en-v1.5-onnx-q"),
+  #         model_file="model_optimized.onnx",
+  #     )
+  #
+  # So `fastembedName` and `dims` below are that record verbatim, not a guess.
+  # It is also fastembed's own default model, which is a mild but real signal:
+  # it is the one path through the library that gets the most use.
+  - id: bge-small-en-v1.5
+    displayName: "BGE Small EN v1.5 (embeddings)"
+    interface: embed
+    provider: fastembed
+    # The exact registry id. NOT the HF repo the bytes come from — fastembed owns
+    # that mapping and has changed it before (the same model was once served from
+    # a tarball on a Google Storage bucket; see the `BAAI/bge-small-en` entry
+    # above it in the same file). Naming the repo here would pin an
+    # implementation detail of the library.
+    fastembedName: "BAAI/bge-small-en-v1.5"
+    dims: 384
+    # Spelled as Qdrant spells it — it goes into the create-collection body
+    # verbatim. Cosine is the metric bge-small-en-v1.5 is trained for; its
+    # vectors are normalised, so Dot would give the same ranking and Euclid
+    # would not.
+    distance: Cosine
+    # Under the `models` PVC root, matching the chat model's `llm/`. The seed Job
+    # writes fastembed's cache here and both RAG containers read it from here
+    # with `cache_dir=/mnt/models/embed`.
+    storageSubpath: embed
+    # Empty for the reason in the header above: there is no single URL. The
+    # loader requires a seedUrl for `chat` and `predict-v1` and forbids one here,
+    # so this emptiness is checked rather than merely tolerated.
+    seedUrl: ""

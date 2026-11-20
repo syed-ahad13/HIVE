@@ -1,0 +1,177 @@
+# ===========================================================================
+# STUDIO FRAGMENT — QDRANT (the `vector-db` resource)
+# Rendered by studio/backend into tenants/$project/rendered/qdrant.yaml
+# ===========================================================================
+# The tenant's vector index: one Deployment, one Service, one PVC (declared in
+# namespace-pack). It is THE FIRST THING HIVE RUNS FOR A TENANT THAT IS NOT AN
+# InferenceService, which is why the placement decision is written out at length
+# in the template header rather than assumed here.
+#
+# IT LIVES IN THE HOST NAMESPACE, NOT IN THE TENANT'S vCLUSTER. The reason is
+# concrete: a pod authored inside a vCluster cannot mount the existing host
+# `models` and `scratch` PVCs — the syncer maps a virtual claim to a NEW host
+# claim, so an in-vCluster ingestion Job would faithfully index an empty volume.
+# The ingestion Job therefore has to be host-native, and a Qdrant its ingester
+# cannot reach is no use. KServe's predictor pods are host-native for the same
+# family of reasons, so this is the tenancy model the platform already has.
+#
+# ---------------------------------------------------------------------------
+# A DEPLOYMENT, NOT A StatefulSet — AND THE REASON IS NOT LAZINESS
+# ---------------------------------------------------------------------------
+# A StatefulSet buys three things: stable per-replica network identity, ordered
+# rollout, and a volumeClaimTemplate that provisions one PVC per replica. This
+# workload wants none of them.
+#
+#   * ONE REPLICA, ALWAYS. Qdrant clusters by Raft; a second replica without
+#     cluster configuration is not high availability, it is two databases with
+#     the same name. Per-replica identity is meaningless at n=1.
+#   * THE PVC IS DECLARED IN namespace-pack, on purpose. It must be counted by
+#     the tenant's ResourceQuota like every other claim, and a
+#     volumeClaimTemplate creates claims OUTSIDE the pack — invisible in the
+#     manifest a reviewer reads, and provisioned at a moment nothing controls.
+#     Teardown would leave them behind: deleting a StatefulSet does NOT delete
+#     the claims its template made.
+#   * `Recreate` BELOW IS THE ORDERING GUARANTEE that matters here, and it is
+#     the one thing this file must get right — see the strategy field.
+#
+# ---------------------------------------------------------------------------
+# VERIFIED, NOT RECALLED (2026-08-31)
+# ---------------------------------------------------------------------------
+#   arm64          `docker manifest inspect qdrant/qdrant:v1.19.0`
+#                  -> linux/amd64, linux/arm64. Native on Apple Silicon.
+#   readiness      Probed against a running v1.19.0 container. `/readyz` -> 200
+#                  ("all shards are ready"), `/healthz` -> 200, `/livez` -> 200,
+#                  `/health` -> 404. The obvious guess is the one that 404s.
+#   storage path   `/qdrant/storage`, confirmed by listing it inside the running
+#                  container after creating a collection.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT
+# ---------------------------------------------------------------------------
+# Two passes: `#@if` / `#@end` blocks first (none here), then string.Template
+# substitution. A LITERAL dollar sign must be written `$`.
+#
+# Placeholders:
+#   $project        project name
+#   $qdrant_image   pinned image reference, from app/render.py
+# ===========================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: abc-qdrant
+  namespace: p-abc
+  labels:
+    hive.ksl/project: abc
+    hive.ksl/role: vector-db
+    hive.ksl/template: studio-rag
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      hive.ksl/project: abc
+      hive.ksl/role: vector-db
+  # ---------------------------------------------------------------------
+  # `Recreate`, NOT the default `RollingUpdate`. THIS IS LOAD-BEARING.
+  # ---------------------------------------------------------------------
+  # The PVC is ReadWriteOnce on local-path. A rolling update starts the new pod
+  # BEFORE terminating the old one, and the new pod cannot attach a volume the
+  # old one still holds — so it sits in ContainerCreating with
+  # "Multi-Attach error for volume" until the rollout times out. The deployment
+  # never converges and `kubectl rollout status` fails with nothing in the pod
+  # log to explain it, because there is no pod log.
+  #
+  # `Recreate` takes the old pod down first. That means a few seconds of
+  # downtime on every change, which is the correct trade for a single-replica
+  # database on a single-writer volume.
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        hive.ksl/project: abc
+        hive.ksl/role: vector-db
+    spec:
+      containers:
+        - name: qdrant
+          image: qdrant/qdrant:v1.19.0
+          ports:
+            # Qdrant serves BOTH protocols. The HTTP port is what everything in
+            # this repository uses — the ingestion Job, the RAG service, and the
+            # BFF's live point-count read all speak REST — but the gRPC port is
+            # published because qdrant-client will prefer it if asked, and a
+            # Service that silently lacked it would turn a one-line client
+            # change into a connection error.
+            - name: http
+              containerPort: 6333
+            - name: grpc
+              containerPort: 6334
+          # `/readyz`, verified above. Qdrant answers it only once its shards
+          # are loaded, which after a restart means after the on-disk index has
+          # been read — exactly the condition the RAG service needs before it
+          # starts sending searches.
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 5
+            timeoutSeconds: 3
+            failureThreshold: 12
+          # A SEPARATE PROBE ON A SEPARATE PATH, not a copy of the readiness
+          # one. `/livez` asks "is the process alive?", `/readyz` asks "can it
+          # serve?". Restarting a Qdrant that is merely still loading its shards
+          # would put it in a loop it can never escape, which is what pointing
+          # liveness at /readyz would do.
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          volumeMounts:
+            - name: qdrant-data
+              mountPath: /qdrant/storage
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: qdrant-data
+          persistentVolumeClaim:
+            claimName: qdrant-data
+---
+# The stable name everything else uses. `$project-qdrant` appears as
+# QDRANT_URL in the ingestion Job and the RAG service, and it is what the BFF
+# port-forwards to when the project page reads a live point count.
+#
+# ClusterIP: this is an internal service and there is nothing to expose. A PI
+# reaches their index by asking their RAG endpoint a question, or through the
+# project page — never by connecting to Qdrant, which has no authentication of
+# its own and relies entirely on the namespace's default-deny NetworkPolicy
+# (CLAUDE.md §2.5) for isolation.
+apiVersion: v1
+kind: Service
+metadata:
+  name: abc-qdrant
+  namespace: p-abc
+  labels:
+    hive.ksl/project: abc
+    hive.ksl/role: vector-db
+    hive.ksl/template: studio-rag
+spec:
+  type: ClusterIP
+  selector:
+    hive.ksl/project: abc
+    hive.ksl/role: vector-db
+  ports:
+    - name: http
+      port: 6333
+      targetPort: http
+    - name: grpc
+      port: 6334
+      targetPort: grpc

@@ -1,0 +1,130 @@
+# ===========================================================================
+# STUDIO FRAGMENT — MODEL SEED JOB (RAG STACK)
+# Rendered by studio/backend into tenants/$project/rendered/model-seed.yaml
+# ===========================================================================
+# ONE Job that fetches BOTH models a RAG project needs, into the project's own
+# `models` PVC:
+#
+#   /mnt/models/$chat_subpath/<file>.gguf     the chat model, by HTTPS GET from
+#                                             the catalogue entry's seedUrl
+#   /mnt/models/$embed_subpath/models--...    the embedding model, as an ONNX
+#                                             cache warmed by fastembed
+#
+# ONE JOB, NOT TWO, and that is a deliberate choice rather than a saving. The
+# pipeline has one `model-seed` step and the step must be able to say "the
+# models are there" or "they are not"; two Jobs would mean a step that is half
+# done is indistinguishable from a step that failed, and a retry would have to
+# reason about which half to redo. Both fetches are idempotent, so re-running
+# the whole Job is cheap and safe.
+#
+# ---------------------------------------------------------------------------
+# THIS IS THE ONLY NETWORK EGRESS IN THE PIPELINE
+# ---------------------------------------------------------------------------
+# And both halves of it are closed:
+#
+#   the chat model    `seedUrl`, verbatim from templates/catalog/models.yaml.
+#                     A PI cannot supply one; the enum is a closed list.
+#   the embedding     `fastembedName`, also from models.yaml, resolved by
+#                     fastembed to a Hugging Face repo it owns the mapping for.
+#
+# NOTHING ELSE IN THE PROJECT EVER REACHES THE NETWORK. The ingestion Job and
+# the RAG service both mount `models` READ-ONLY and both load the embedding
+# model with `local_files_only=True` — so if this Job did not put the bytes here,
+# they fail loudly at startup rather than quietly downloading at query time.
+# That is the property worth protecting: a query path that can reach the
+# internet is a query path whose latency and privacy depend on the internet.
+#
+# ---------------------------------------------------------------------------
+# WHY THIS JOB HAS A RESOURCE STANZA WHEN inference-endpoint's DOES NOT
+# ---------------------------------------------------------------------------
+# inference-endpoint's seed Job carries none on purpose: it is the first live
+# proof in every deployment that namespace-pack's LimitRange is mandatory rather
+# than tidy. This one cannot afford the demonstration. The LimitRange default
+# ceiling is 512Mi, and importing fastembed pulls in onnxruntime, which is past
+# that before it has done any work — the failure is an Exit 137 with no message,
+# which reads like anything except a memory limit.
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT
+# ---------------------------------------------------------------------------
+# Two passes: `#@if` / `#@end` conditional blocks first (this file has none),
+# then string.Template substitution. A LITERAL dollar sign must be written `$`.
+#
+# Placeholders:
+#   $project              project name
+#   $rag_image            hive-local/rag-toolkit:<tag>, built by
+#                         scripts/build-rag-toolkit.sh and `kind load`ed
+#   $chat_seed_url        the chat model's seedUrl, verbatim from models.yaml
+#   $chat_subpath         the chat model's storageSubpath (e.g. "llm")
+#   $embed_subpath        the embedding model's storageSubpath (e.g. "embed")
+#   $embed_fastembed_name the exact fastembed registry id
+#
+# THERE IS NO EMBEDDED SCRIPT HERE, unlike inference-endpoint's seed Job. The
+# logic is /app/seed.py inside the rag-toolkit image, where it can be read,
+# linted and run outside Kubernetes. A 60-line Python program inside a YAML
+# string inside a string.Template is three levels of quoting deep, and the
+# inference-endpoint fragment carries a standing warning about exactly that.
+# ===========================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: seed-abcd
+  namespace: p-abcd
+  labels:
+    hive.ksl/project: abcd
+    hive.ksl/role: seed
+    hive.ksl/template: studio-rag
+spec:
+  # A network download; transient failure is normal and worth retrying. Both
+  # halves skip what is already on disk, so a retry resumes rather than restarts.
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        hive.ksl/project: abcd
+        hive.ksl/role: seed
+    spec:
+      # `Never` replaces a failed pod with a new one (counted against
+      # backoffLimit) rather than restarting it in place, which keeps the
+      # failure visible in `kubectl get pods` instead of hiding it in a restart
+      # count. The provisioning UI reads that.
+      restartPolicy: Never
+      containers:
+        - name: seed
+          image: hive-local/rag-toolkit:0.1.0
+          # The image is built locally and loaded into the kind nodes with
+          # `kind load docker-image`; it exists in no registry. Without this,
+          # the kubelet tries to pull `hive-local/rag-toolkit:...` from Docker
+          # Hub and the pod sits in ImagePullBackOff — which looks like a
+          # network problem and is not one.
+          imagePullPolicy: Never
+          command: ["python", "/app/seed.py"]
+          env:
+            - name: CHAT_SEED_URL
+              value: "https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct-GGUF/resolve/main/qwen2.5-0.5b-instruct-q4_k_m.gguf"
+            - name: CHAT_SUBPATH
+              value: "llm"
+            - name: EMBED_SUBPATH
+              value: "embed"
+            - name: EMBED_MODEL
+              value: "BAAI/bge-small-en-v1.5"
+            - name: MODELS_DIR
+              value: /mnt/models
+          volumeMounts:
+            # READ-WRITE, and this is the ONLY workload in the project that ever
+            # writes to `models`. The ingestion Job, the RAG service and the
+            # KServe predictor all mount it read-only.
+            - name: models
+              mountPath: /mnt/models
+          # See the header: the LimitRange default would OOM the ONNX import.
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 2Gi
+      volumes:
+        - name: models
+          persistentVolumeClaim:
+            claimName: models

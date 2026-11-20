@@ -1,0 +1,26 @@
+# Default domain for every Knative Route in HIVE-LOCAL.
+#
+# config-domain maps a domain suffix to an optional label selector. A key whose
+# value is the empty string is the least-specific rule, i.e. the default domain
+# applied to all Routes that match nothing more specific.
+#
+# We use "hive.local", which deliberately does not resolve in DNS. Locally we
+# reach services through `kubectl port-forward` to the Kourier gateway and pass an
+# explicit `Host:` header, so no DNS entry is needed and nothing accidentally
+# depends on name resolution that production would provide differently
+# (production: MetalLB + Kong with real hostnames).
+#
+# Left unset, Knative would default to "svc.cluster.local", which would make
+# InferenceService URLs look cluster-internal and obscure the ingress path we are
+# rehearsing.
+#
+# Applied with:
+#   kubectl patch configmap config-domain -n knative-serving \
+#     --type merge --patch-file host/serving/knative/config-domain-patch.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: config-domain
+  namespace: knative-serving
+data:
+  hive.local: ""

@@ -1,0 +1,232 @@
+# ===========================================================================
+# STUDIO FRAGMENT — NAMESPACE PACK (BATCH INFERENCE)
+# Rendered by studio/backend into tenants/$project/rendered/namespace-pack.yaml
+# ===========================================================================
+# The HOST-side ground for a batch run. Structurally the same pack every other
+# template writes — namespace, ceiling, defaults, storage — with two differences,
+# both of which come from the same fact: a run has a file going IN and a file
+# coming OUT, and nothing staying up.
+#
+#   1. TWO PVCs, not three. There is no vector index. `scratch` is 5Gi rather
+#      than 1Gi because it holds the dataset AND the results.
+#   2. hive.ksl/template: studio-batch, so Studio can tell what it owns.
+#
+# ---------------------------------------------------------------------------
+# THE EXPIRY ANNOTATION IS WRITTEN TWICE, AND THIS IS THE FIRST TIME
+# ---------------------------------------------------------------------------
+# A service sets `hive.ksl/expiry` once, from `durationDays`, and never moves it.
+# A run cannot do that: the clock a PI chose is `artifactRetentionDays`, and it
+# only starts when there are artifacts to retain — which is not known until the
+# work finishes.
+#
+# So this writes a SAFETY NET: provisioning time plus the retention period,
+# which is always EARLIER than the final value and therefore never leaves a
+# project alive longer than intended if the run dies before `collect-results`
+# can set the real one. A namespace with no expiry at all would be the failure
+# worth avoiding, because the reconciler would never collect it.
+#
+# `collect-results` PATCHes it to completion time plus retention once the run
+# has actually produced something. Studio only ever SETS this annotation; the
+# host reconciler CronJob is what honours it (CLAUDE.md §2.6).
+#
+# ---------------------------------------------------------------------------
+# TEMPLATING CONTRACT — READ BEFORE EDITING
+# ---------------------------------------------------------------------------
+# Two passes, in this order:
+#
+#   PASS 1 — CONDITIONAL BLOCKS. Lines between `#@if <key>=<value>` and `#@end`
+#     are KEPT only when the render facts contain that key/value pair. Marker
+#     lines are always removed. Blocks do not nest.
+#     Facts for this fragment:  tier = small | medium
+#
+#   PASS 2 — string.Template SUBSTITUTION over what pass 1 left. Placeholders
+#     are $name / ${name}. A LITERAL dollar sign must be written `$`.
+#
+# Placeholders used here:
+#   $project      the PI's project name, validated SERVER-SIDE against
+#                 ^[a-z0-9-]{3,20}$ and the reserved list
+#   $tier         small | medium
+#   $ttl_expiry   RFC3339 UTC — provisioning time + artifactRetentionDays
+# ===========================================================================
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: p-brave
+  labels:
+    hive.ksl/project: brave
+    hive.ksl/tier: small
+    # THE OWNERSHIP LABEL. Studio checks this before it writes to or deletes
+    # anything, and it is why a batch project can never be confused with
+    # p-inf-101 (t-ao) or p-inf-103 (t-sz). CLAUDE.md invariant (d).
+    hive.ksl/template: studio-batch
+    hive.ksl/kind: tenant
+  annotations:
+    # The safety net described in the header — replaced by collect-results with
+    # completion time + retention once the run has produced something.
+    hive.ksl/expiry: "2026-09-29T10:16:29Z"
+    hive.ksl/lifecycle-kind: run
+---
+# ===========================================================================
+# THE CEILING — profile `batch`
+# ===========================================================================
+# Enforced at ADMISSION TIME (CLAUDE.md §2.4): the API server refuses an
+# over-quota pod outright. Nothing over-quota ever runs, not even briefly.
+#
+# THE GPU LINE IS WHAT MAKES A BATCH RUN A REAL TENANT WORKLOAD. The run's GPU
+# is requested by the serving runtime running as a NATIVE SIDECAR, and a native
+# sidecar's requests are counted against this quota exactly like an ordinary
+# container's — VERIFIED on this cluster, observed going 0 -> 1 -> 0 across a
+# run, not assumed from the docs. So a batch run is subject to the same ceiling,
+# at the same admission point, as a served endpoint, and two runs in one project
+# serialise behind it rather than both starting.
+#
+# STORAGE IS THE NUMBER THAT MOVED, and here is the whole arithmetic:
+#
+#     models     1Gi   the chosen model, staged once by the seed Job
+#     scratch    5Gi   the dataset going in AND the results coming out
+#     vCluster   5Gi   the control plane's own etcd claim, provisioned by its
+#                      StatefulSet INTO THIS NAMESPACE and counted here
+#     ----------------
+#     total     11Gi   ...which is why the ceiling is not 10Gi
+#
+# The task specified 10Gi. That is one gigabyte short of what this template's
+# own three claims require, and a quota that cannot admit the resources the
+# template itself creates is a quota that fails at `vcluster` every time. 12Gi
+# is the smallest honest number: it matches what inference-endpoint and the RAG
+# stack already use, and leaves 1Gi of headroom rather than -1Gi.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: tier-quota
+  namespace: p-brave
+  labels:
+    hive.ksl/project: brave
+    hive.ksl/tier: small
+    hive.ksl/quota-profile: batch
+spec:
+  hard:
+    # !! 2, NOT 1, AND THE REASON MATTERS !!
+    #
+    # The Small tier is ONE GPU. This quota is 2 because Knative's validating
+    # webhook DRY-RUN CREATES a sample pod to validate every Revision template.
+    # A batch run creates no Revision — but the tenant's namespace may also hold
+    # a served endpoint, and the quota is the namespace's, not the workload's.
+    # Keeping the number identical across templates means a PI who runs a batch
+    # job in a project that also serves a model does not hit a ceiling that
+    # moved under them. Full reasoning in DEVIATIONS.md.
+    requests.nvidia.com/gpu: "2"
+    limits.cpu: "8"
+    limits.memory: 16Gi
+    # See the arithmetic in the header block above.
+    requests.storage: 12Gi
+    persistentvolumeclaims: "6"
+    # A batch project creates no InferenceService at all. The line is kept so
+    # the ceiling is the same shape in every template — a PI is not offered a
+    # different set of limits because of which card they clicked.
+    count/inferenceservices.serving.kserve.io: "2"
+---
+# ===========================================================================
+# THE DEFAULTS THAT MAKE THE CEILING SURVIVABLE — MANDATORY, NOT TIDY
+# ===========================================================================
+# Once the quota sets limits.cpu and limits.memory, Kubernetes REQUIRES every
+# container in this namespace to state both, and rejects any that does not:
+#
+#   Error from server (Forbidden): pods "x" is forbidden: failed quota:
+#   tier-quota: must specify limits.cpu for: <container>
+#
+# So the rule is: quota on limits.* -> you MUST also ship a LimitRange.
+#
+# Without it, everything the PI did not write is refused: the vCluster control
+# plane, the seed Job, and the staging pod in this same template.
+#
+# THE BATCH JOB DELIBERATELY DOES NOT RELY ON IT. Both of its containers state
+# their own cpu/memory, because the default ceiling below (512Mi) would
+# OOM-kill a serving runtime loading a model — a failure that surfaces as an
+# unexplained Exit 137 rather than as anything about limits.
+#
+# NOTE this applies ONLY to cpu and memory. Extended resources such as
+# nvidia.com/gpu are never defaulted, so a pod gets a GPU only by asking for one
+# explicitly (CLAUDE.md §2.3) — which is exactly the behaviour wanted.
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: defaults
+  namespace: p-brave
+  labels:
+    hive.ksl/project: brave
+spec:
+  limits:
+    - type: Container
+      defaultRequest:
+        cpu: 100m
+        memory: 128Mi
+      default:
+        cpu: 500m
+        memory: 512Mi
+---
+# ===========================================================================
+# STORAGE — TWO CLAIMS
+# ===========================================================================
+# models   written once by the seed Job, mounted READ-ONLY by everything after.
+# scratch  the dataset going in under input/, the results coming out under
+#          output/. The only claim anything writes to during the run.
+#
+# storageClassName `standard` is kind's local-path provisioner (production:
+# WekaFS CSI with directory quotas — DEVIATIONS.md), and two consequences bite:
+#
+#   * volumeBindingMode is WaitForFirstConsumer, so a claim stays **Pending
+#     until a pod mounts it**. A Pending PVC here is NOT a fault and the
+#     provisioning UI must not report it as one.
+#   * The volume is a directory on ONE node's disk, so ReadWriteOnce is the only
+#     honest access mode, and each claim is pinned to whichever node FIRST
+#     mounts it.
+#
+#     THAT PINNING DOES NOT ARRANGE ITSELF. The seed Job pins `models`. A
+#     staging pod mounting only `scratch` would be free to land on the other
+#     worker and pin `scratch` there — and the batch Job mounts BOTH, so no
+#     single node could satisfy it:
+#
+#       0/3 nodes are available: 1 node(s) had untolerated taint(s),
+#       2 node(s) didn't match PersistentVolume's node affinity.
+#
+#     The pod stays Pending for ever and the step times out with an EMPTY log,
+#     because nothing ever ran. It is a coin toss, so it works until it does not.
+#     staging-pod.yaml.tmpl therefore mounts `models` read-only purely as a
+#     scheduling fence. This is the same trap the RAG stack hit for real.
+#
+#     ALL OF THIS IS A LOCAL-PATH ARTEFACT. On WekaFS (ReadWriteMany) nothing is
+#     pinned to a node and the fence comes out.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: models
+  namespace: p-brave
+  labels:
+    hive.ksl/project: brave
+    hive.ksl/role: models
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 1Gi
+---
+# 5Gi, not 1Gi. The upload ceiling is 200MB and the results of a chat run are
+# roughly the size of the input again; 5Gi holds both many times over and still
+# leaves the 12Gi namespace ceiling a gigabyte of headroom.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: scratch
+  namespace: p-brave
+  labels:
+    hive.ksl/project: brave
+    hive.ksl/role: scratch
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: standard
+  resources:
+    requests:
+      storage: 5Gi
